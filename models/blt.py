@@ -286,7 +286,7 @@ def get_blt_model(model_name, pretrained=False, map_location=None, **kwargs):
     times = kwargs['times']
     num_classes = kwargs['num_classes']
     pooling_function = kwargs['pooling_function']
-    
+
     if num_layers == 4:
         layer_channels  = {'inp':img_channels, '0':64, '1':128, '2':256, '3':512}
         out_shape  = {'0':56, '1':28, '2':14, '3':7}

@@ -1,4 +1,3 @@
-
 import matplotlib.pyplot as plt
 import rsatoolbox
 from rsatoolbox.data import Dataset
@@ -11,7 +10,7 @@ import matplotlib as mpl
 from PIL import Image
 from models.cornet import get_cornet_model
 
-from repsim import AngularCKA
+# from repsim.metrics import AngularCKA
 
 import torch
 import torch.nn as nn
@@ -23,6 +22,8 @@ import pandas as pd
 import numpy as np
 import csv
 import torchvision
+
+from argparse import Namespace
 
 def load_vggface2():
 
@@ -47,13 +48,13 @@ def load_vggface2():
 
 def sample_vggface2(num_cats=5, per_cat=10, split_folder='test'):
 
-    root = '/scratch/nklab/projects/face_proj/datasets/VGGFace2/'
+    root = '/Volumes/kriegeskorte-locker/VGGFace2/VGG-Face2'
     #split_folder = 'test'
     split_dir = root + split_folder + '/'
         
     dir_list = os.listdir(split_dir)
 
-    test_bb_path = '/scratch/nklab/projects/face_proj/datasets/VGGFace2/meta/loose_bb_test_wlabels.csv'
+    test_bb_path = '/Volumes/kriegeskorte-locker/VGGFace2/VGG-Face2/meta/loose_bb_test_wlabels.csv'
     bb_df = pd.read_csv(test_bb_path)
 
     transform_rgb =  torchvision.transforms.Compose([
@@ -91,7 +92,7 @@ def sample_vggface2(num_cats=5, per_cat=10, split_folder='test'):
 
 
 def sample_FEI_dataset(num_ids=25, orientation_inds = None, mirror_symmetry = None):
-    root = '/engram/nklab/hossein/recurrent_models/face_datasets/'
+    root = '/Volumes/kriegeskorte-locker/hossein/recurrent_models/face_datasets/'
     split_folder = 'FEI'
     split_dir = root + split_folder + '/'
     dir_list = os.listdir(split_dir)
@@ -148,7 +149,7 @@ def sample_FEI_dataset(num_ids=25, orientation_inds = None, mirror_symmetry = No
 
 
 def FBO_dataset():
-    root = '/engram/nklab/hossein/recurrent_models/face_datasets/'
+    root = '/Volumes/kriegeskorte-locker/hossein/recurrent_models/face_datasets/'
     split_folder = 'FBO'
     split_dir = root + split_folder + '/'
     dir_list = os.listdir(split_dir)
@@ -204,13 +205,13 @@ def FBO_dataset():
 import scipy.io
 
 def kasper_dataset():
-    mat = scipy.io.loadmat('/engram/nklab/hossein/recurrent_models/BLT_models/datasets/saved_data/images.mat')
+    mat = scipy.io.loadmat('/Volumes/kriegeskorte-locker/hossein/recurrent_models/BLT_models/datasets/saved_data/images.mat')
     imarray = mat['imarray']
 
-    neuro_mat = scipy.io.loadmat('/engram/nklab/hossein/recurrent_models/BLT_models/datasets/saved_data/neural.mat')
+    neuro_mat = scipy.io.loadmat('/Volumes/kriegeskorte-locker/hossein/recurrent_models/BLT_models/datasets/saved_data/neural.mat')
     neuro_data = neuro_mat['R'].transpose()
 
-    imgs = torch.load('/engram/nklab/hossein/recurrent_models/BLT_models/datasets/saved_data/imgs_kasper.pt')
+    imgs = torch.load('/Volumes/kriegeskorte-locker/hossein/recurrent_models/BLT_models/datasets/saved_data/imgs_kasper.pt')
 
     # try:
     #     imgs = torch.load('./datasets/saved_data/imgs_kasper.pt')
@@ -499,10 +500,10 @@ def calc_dprime_from_dataset(model, output_layer='output_5', threshold = 0.2, da
 
 def load_model_path(model_path, print_model=False):
 
-    checkpoint = torch.load(model_path + 'checkpoint.pth', map_location='cpu')
-
-    pretrained_dict = checkpoint['model']
-    args = checkpoint['args']
+    checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+    
+    pretrained_dict = checkpoint['model'].state_dict()
+    args = checkpoint['extra']
     model = build_model(args, verbose=print_model)
     model.load_state_dict(pretrained_dict, strict=False)
     model.to(device)
