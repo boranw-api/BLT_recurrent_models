@@ -8,3 +8,5 @@ datasets/saved_data/
 run_model.ipynb
 *.db
 .ds_store
+blt_local_cache/
+repsim/

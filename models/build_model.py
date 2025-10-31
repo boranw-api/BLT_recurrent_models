@@ -34,5 +34,6 @@ def build_model(args, pretrained=False, verbose=True):
 
     if verbose:
         print(f"Number of model parameters: {num_parameters}")
+        print(f"Number of recurrence: {args.recurrent_steps}" )
         print(model)
     return model
