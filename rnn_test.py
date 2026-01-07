@@ -6,7 +6,10 @@ import matplotlib.pyplot as plt
 from collections import OrderedDict
 from pathlib import Path
 
-from geometry_path import kasper_loaders, sample_images, plot_recurrence_grid_joint_embedding, plot_cache_models_joint_embedding
+import random
+import numpy as np
+
+from geometry_path import sample_images, plot_model_merged_trajectories_1, amir_loaders, plot_cache_models_joint_embedding_merged_layers, plot_shepard_diagram, plot_cache_models_joint_embedding_merged_layers_separate_mds
 from analyze_representations import load_model_path
 
 # visualizing the model 
@@ -68,26 +71,46 @@ def build_args():
     args.layer_categories = OrderedDict(json.loads(args.layer_categories))
     return args
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def main():
     args = build_args()
     path = args.model_path
     layer_categories = args.layer_categories
-    train_loader, test_loader = kasper_loaders(args)
+    # train_loader, test_loader = kasper_loaders(args)
+    train_loader, test_loader = amir_loaders(args)
 
-    model_recurrent, gap, _ = load_model_path(path, print_model=True)
+    path_model_folder = Path("./blt_local_cache/")
+
+    model_paths = sorted(
+        (subdir / "blt_full_objects.pt")
+        for subdir in path_model_folder.iterdir()
+        if subdir.is_dir() and (subdir / "blt_full_objects.pt").is_file()
+    )
+
+    imgs, labels = sample_images(test_loader, n=50)
+
+    for path in model_paths:
+        model_name = "_".join(path.parts[-2].split("_")[:2])
+        print(f"Processing: {model_name}")
+        model_recurrent, gap, _ = load_model_path(path, print_model=True)
+
 
     # train_nodes, _ = get_graph_node_names(model_recurrent)
     # print('The computational steps in the network are: \n', train_nodes)
 
-    # imgs, labels = sample_images(test_loader, n=20)
     # return_layers = ['conv_2', 'conv_2_1', 'conv_2_2', 'conv_2_3', 'conv_2_4', 'conv_2_5', 'conv_2_6', 'conv_2_7', 'conv_2_8', 'conv_2_9']
     # model_features = extract_features(model_recurrent, imgs.to(args.device), return_layers)
 
     # rdms, rdms_dict = calc_rdms(model_features)
     # plot_rdms(rdms_dict)
-
-    imgs, labels = sample_images(test_loader, n=50)
-    max_steps_to_plot = model_recurrent.times
+    
+        max_steps_to_plot = model_recurrent.times
 
     # plot_recurrence_grid(
     #     model_recurrent,
@@ -108,14 +131,22 @@ def main():
     #     max_steps=max_steps_to_plot,
     # )
 
-    plot_cache_models_joint_embedding(
-        args,
-        imgs,
-        labels,
-        layer_categories,
-        cache_dir="blt_local_cache",
-        max_steps=max_steps_to_plot,
-    )
+        plot_model_merged_trajectories_1(
+            args,
+            model_name,
+            model_recurrent,
+            imgs,
+            labels
+        )
+
+    # plot_cache_models_joint_embedding(
+    #     args,
+    #     imgs,
+    #     labels,
+    #     layer_categories,
+    #     cache_dir="blt_local_cache",
+    #     max_steps=max_steps_to_plot,
+    # )
 
     # visualization of model
     # viz = visualize_blt(model_recurrent)
@@ -124,7 +155,33 @@ def main():
     # viz = TikzComputationGraphVisualizer(model_recurrent)
     # display(viz)
 
+def main_single_MDS():
+    args = build_args()
+
+    set_seed(args.seed)
+
+    path = args.model_path
+    layer_categories = args.layer_categories
+    # train_loader, test_loader = kasper_loaders(args)
+    train_loader, test_loader = amir_loaders(args)
+
+    imgs, labels = sample_images(test_loader, n=50)
+
+    # _, mds, dsim = plot_cache_models_joint_embedding_merged_layers(
+    #     args,
+    #     imgs,
+    #     labels
+    # )
+
+    # plot_shepard_diagram(mds, dsim, save_path=Path.cwd())
+
+    plot_cache_models_joint_embedding_merged_layers_separate_mds(
+        args,
+        imgs,
+        labels
+    )
+
 
 if __name__ == "__main__":
 
-    main()
+    main_single_MDS()
