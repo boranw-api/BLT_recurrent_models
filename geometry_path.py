@@ -1,27 +1,24 @@
-
-import contextlib
 import io
-# Standard library imports
+import pickle
 import logging
-from collections import OrderedDict
-
-# External libraries: General utilities
+import contextlib
 import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from collections import OrderedDict
+from pathlib import Path
 
 # PyTorch related imports
 import torch
 import torch.nn.functional as F
+from torch.utils.data import TensorDataset, random_split
 from torchvision import datasets, transforms
 from torchvision.models.feature_extraction import create_feature_extractor, get_graph_node_names
 from torchvision.utils import make_grid
 
-# Matplotlib for plotting
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-
-# Scikit-Learn for machine learning utilities
-from sklearn.decomposition import PCA
 from sklearn import manifold
+from scipy.spatial.distance import pdist
+import plotly.graph_objects as go
 
 # RSA toolbox specific imports
 import rsatoolbox
@@ -30,85 +27,10 @@ from rsatoolbox.rdm.calc import calc_rdm
 
 # new imports for our plotting 
 from analyze_representations import kasper_dataset, load_model_path
-from torch.utils.data import TensorDataset, random_split
 
-from pathlib import Path
 
-from matplotlib.colors import LinearSegmentedColormap
-import pickle
 
-def plot_shepard_diagram(mds_transformer, dissimilarity_matrix, save_path=None):
-    """
-    Plots a Shepard diagram to examine the goodness of fit for an MDS transformer.
 
-    Inputs:
-    - mds_transformer: A fitted sklearn manifold.MDS instance.
-    - dissimilarity_matrix: The original dissimilarity matrix used for fitting.
-    - save_path: Optional path to save the figure.
-
-    Outputs:
-    - fig: The matplotlib figure object.
-    """
-    import numpy as np
-    from scipy.spatial.distance import pdist
-    import matplotlib.pyplot as plt
-
-    # Get the embedded points
-    embedded = mds_transformer.embedding_
-
-    # Compute fitted distances in the embedded space
-    fitted_distances = pdist(embedded, metric='euclidean')
-
-    # Get original dissimilarities (upper triangle, excluding diagonal)
-    triu_indices = np.triu_indices_from(dissimilarity_matrix, k=1)
-    original_dissimilarities = dissimilarity_matrix[triu_indices]
-
-    # Plot
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(original_dissimilarities, fitted_distances, alpha=0.5, s=10, c='#41B6E6')
-    ax.plot([original_dissimilarities.min(), original_dissimilarities.max()], 
-                [original_dissimilarities.min(), original_dissimilarities.max()], color='#EF002B', linewidth=2, linestyle='--')
-    ax.set_xlabel('Original Dissimilarities')
-    ax.set_ylabel('Fitted Distances')
-    ax.set_title('Shepard Diagram')
-    
-    # 1. Square the dissimilarity matrix.
-    D_sq = dissimilarity_matrix**2
-    n_samples = D_sq.shape[0]
-
-    # 2. Double-center the squared distance matrix.
-    centering_matrix = np.eye(n_samples) - (1 / n_samples) * np.ones((n_samples, n_samples))
-    B = -0.5 * (centering_matrix @ D_sq @ centering_matrix)
-
-    # 3. Compute the eigenvalues of the double-centered matrix.
-    eigenvalues = np.linalg.eigvalsh(B)
-    # Sort eigenvalues in descending order
-    eigenvalues = np.sort(eigenvalues)[::-1]
-
-    # 4. Format the top 5 eigenvalues for display.
-    top_5_eigenvalues = eigenvalues[:5]
-    eigenvalues_str = "\n".join([f"λ{i+1}: {val:.2f}" for i, val in enumerate(top_5_eigenvalues)])
-    fit_text = (
-        f'Stress: {mds_transformer.stress_:.4f}\n---\nTop 5 Eigenvalues:\n{eigenvalues_str}'
-    )
-    # --- End of new code ---
-
-    # Remove grayish grid background
-    for spine in ax.spines.values():
-        spine.set_color('black')
-    ax.set_facecolor('white')
-    ax.grid(False)
-
-    # Add stress value if available
-    if hasattr(mds_transformer, 'stress_'):
-        ax.text(0.05, 0.95, fit_text, 
-                transform=ax.transAxes, fontsize=12, verticalalignment='top',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-
-    if save_path is not None:
-        fig.savefig(save_path, bbox_inches='tight')
-
-    return fig
 
 def fetch_dataloaders(args):
     """
@@ -226,7 +148,6 @@ def amir_loaders(
     setattr(args, "amir_config", config)
 
     return train_loader, test_loader
-
 
 # loading kasper dataset from Vinken SA paper 
 def kasper_loaders(args):
@@ -578,85 +499,6 @@ def rep_path(
 
     return dims
 
-def plot_recurrence_grid(
-    model,
-    imgs,
-    labels,
-    layer_categories,
-    steps=None,
-    category_colors=None,
-    max_steps=None,
-    save_path="representational_geometry_grid.png",
-):
-    """Plots a 3x3 grid of representational paths across layer categories.
-
-    Args:
-        model (torch.nn.Module): Recurrent BLT model.
-        imgs (torch.Tensor): Batch of images used to probe the model.
-        labels (torch.Tensor): Ground-truth labels for the images.
-        layer_categories (OrderedDict): Mapping of category name to list of layer names.
-        steps (int, optional): Number of recurrence steps to capture. Defaults to model.times when None.
-        category_colors (dict, optional): Mapping of category name to color hex codes.
-        max_steps (int, optional): Optional cap on the number of time steps plotted per layer.
-        save_path (str, optional): Where to save the resulting figure.
-    """
-
-    if steps is None:
-        steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
-
-    if category_colors is None:
-        category_colors = {
-            "Early feature extractors": "#1f77b4",
-            "Intermediate representations": "#59402a",
-            "Late identity readout": "#2ca02c",
-        }
-
-    imgs_device = imgs.to(args.device)
-    layer_step_features = {}
-    for layers in layer_categories.values():
-        for layer_name in layers:
-            if layer_name in layer_step_features:
-                continue
-            activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=steps)
-            if max_steps is not None:
-                activations = activations[:max_steps]
-            step_features = {
-                f"{layer_name}_t{idx}": feat for idx, feat in enumerate(activations)
-            }
-            layer_step_features[layer_name] = step_features
-
-    fig, axes = plt.subplots(len(layer_categories), 3, figsize=(18, 18))
-
-    for row_idx, (category_name, layers) in enumerate(layer_categories.items()):
-        row_color = category_colors.get(category_name, '#7f7f7f')
-        for col_idx, layer_name in enumerate(layers):
-            ax = axes[row_idx, col_idx]
-            step_features = layer_step_features.get(layer_name)
-            if not step_features:
-                ax.axis('off')
-                ax.set_title(f"{layer_name}\n(no activations)")
-                continue
-
-            features = {layer_name: step_features}
-            model_colors = {layer_name: row_color}
-            legend = (row_idx == 0 and col_idx == 0)
-            rep_path(
-                features,
-                model_colors,
-                labels,
-                ax=ax,
-                legend=legend,
-                title=layer_name,
-            )
-
-            if col_idx == 0:
-                ax.set_ylabel(category_name, fontsize=14, rotation=90, labelpad=20)
-
-    fig.tight_layout()
-    if save_path is not None:
-        fig.savefig(save_path, bbox_inches='tight')
-    return fig
-    
 def plot_dim_reduction(model_features, labels, transformer_funcs):
     """
     Plots the dimensionality reduction results for model features using various transformers.
@@ -707,619 +549,79 @@ def plot_dim_reduction(model_features, labels, transformer_funcs):
     fig.colorbar(ax_, cax=cbar_ax, ticks=np.linspace(0,9,10))
     plt.show()
 
-# plotting in this way allows cross plot comparison of label (star) location
-def plot_recurrence_grid_joint_embedding(
-    args,
-    model,
-    imgs,
-    labels,
-    layer_categories,
-    steps=None,
-    category_colors=None,
-    max_steps=None,
-    rdm_calc_method="euclidean",
-    rdm_comp_method="cosine",
-    save_path="representational_geometry_grid_aligned.png",
-):
-    if steps is None:
-        steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
+# beginning here: new functions for Fig.4 
+def plot_shepard_diagram(data, dissimilarity_matrix=None, save_path=None, layout=None, title='Shepard Diagram'):
+    """
+    Plots Shepard diagram(s) to examine the goodness of fit for MDS transformer(s).
 
-    if category_colors is None:
-        category_colors = {
-            "Early Layers": "#1f77b4",
-            "Intermediate Layers": "#ff7f0e",
-            "Late Layers": "#f70909",
-        }
+    Inputs:
+    - data: Either an MDS transformer (single plot) or a list of tuples 
+            (mds_transformer, dissimilarity_matrix, title) for multiple plots.
+    - dissimilarity_matrix: The original dissimilarity matrix (only for single plot).
+    - save_path: Optional path to save the figure.
+    - layout: Tuple (rows, cols) for grid layout (only for multiple plots).
+    - title: Title for the plot (only for single plot).
 
-    imgs_device = imgs.to(args.device)
+    Outputs:
+    - fig: The matplotlib figure object.
+    """
 
-    layer_step_features = OrderedDict()
-    for layers in layer_categories.values():
-        for layer_name in layers:
-            if layer_name in layer_step_features:
-                continue
-            activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=steps)
-            if max_steps is not None:
-                activations = activations[:max_steps]
-            step_features = OrderedDict(
-                (f"{layer_name}_t{idx}", feat) for idx, feat in enumerate(activations)
-            )
-            layer_step_features[layer_name] = step_features
+    if isinstance(data, list):
+        # Multiple plots case
+        plot_list = data
+        if layout is None:
+            n_plots = len(plot_list)
+            cols = int(np.ceil(np.sqrt(n_plots)))
+            rows = int(np.ceil(n_plots / cols))
+            layout = (rows, cols)
+    else:
+        # Single plot case
+        plot_list = [(data, dissimilarity_matrix, title)]
+        layout = (1, 1)
 
-    flat_features = OrderedDict()
-    layer_key_map = OrderedDict()
-    for layer_name, step_features in layer_step_features.items():
-        keys = list(step_features.keys())
-        layer_key_map[layer_name] = keys
-        for key in keys:
-            flat_features[key] = step_features[key]
-
-    if not flat_features:
-        raise ValueError("No activations collected; check layer names or steps.")
-
-    rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
-    rdms = rdms_flat
-    ax_ticks = list(flat_features.keys())
-
-    include_labels = labels is not None
-    if include_labels:
-        label_rdm, _ = calc_rdms(
-            args,
-            {"labels": F.one_hot(labels).float().to(args.device)},
-            method=rdm_calc_method,
-        )
-        rdms = rsatoolbox.rdm.concat((rdms, label_rdm))
-        ax_ticks.append("labels")
-
-    rdms_comp = rsatoolbox.rdm.compare(rdms, rdms, method=rdm_comp_method)
-    if rdm_comp_method == "cosine":
-        rdms_comp = np.clip(rdms_comp, -1, 1)
-        rdms_comp = np.arccos(rdms_comp)
-    rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-    rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-
-    transformer = manifold.MDS(
-        n_components=2,
-        max_iter=1000,
-        n_init=10,
-        normalized_stress="auto",
-        dissimilarity="precomputed",
-    )
-    dims = transformer.fit_transform(rdms_comp)
-
-    coord_map = {tick: dims[idx] for idx, tick in enumerate(ax_ticks)}
-
-    coords_array = np.vstack(list(coord_map.values()))
-    amin, amax = coords_array.min(), coords_array.max()
-    center = (amin + amax) / 2.0
-    half_span = max((amax - amin) / 2.0, 1e-6)
-    axis_min = center - half_span * 1.25
-    axis_max = center + half_span * 1.25
-
-    fig, axes = plt.subplots(len(layer_categories), 3, figsize=(18, 18))
-
-    for row_idx, (category_name, layers) in enumerate(layer_categories.items()):
-        row_color = category_colors.get(category_name, "#b3cde0")
-        for col_idx, layer_name in enumerate(layers):
-            ax = axes[row_idx, col_idx]
-            keys = layer_key_map.get(layer_name, [])
-            if not keys:
-                ax.axis("off")
-                ax.set_title(f"{layer_name}\n(no activations)")
-                continue
-
-            coords = np.vstack([coord_map[k] for k in keys if k in coord_map])
-            if coords.size == 0:
-                ax.axis("off")
-                ax.set_title(f"{layer_name}\n(no coords)")
-                continue
-
-            ax.plot(coords[:, 0], coords[:, 1], color=row_color, marker=".")
-            ax.set_xlim([axis_min, axis_max])
-            ax.set_ylim([axis_min, axis_max])
-            ax.set_xlabel("dim 1")
-            ax.set_ylabel("dim 2")
-            ax.set_title(layer_name)
-
-            if keys:
-                start_coord = coord_map[keys[0]]
-                ax.plot(start_coord[0], start_coord[1], color="k", marker="s")
-
-            if include_labels:
-                label_coord = coord_map["labels"]
-                ax.plot(label_coord[0], label_coord[1], color="m", marker="*")
-
-            if row_idx == 0 and col_idx == 0:
-                ax.legend([category_name], fontsize=8, loc="upper right")
-
-            if col_idx == 0:
-                ax.set_ylabel(category_name, fontsize=14, rotation=90, labelpad=20)
-
-    fig.tight_layout()
-    if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
-    return fig
-
-# plot all trajectories in one 
-def plot_model_merged_trajectories(
-    args,
-    model,
-    imgs,
-    labels,
-    steps=None,
-    target_layers=None,
-    max_steps=None,
-    cmap_name="viridis",
-    layer_cmap_names=None,
-    rdm_calc_method="euclidean",
-    rdm_comp_method="cosine",
-    save_path="representational_geometry_merged.png",
-):
-    if steps is None:
-        steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
-
-    if target_layers is None:
-        target_layers = ["output_0", "output_1", "output_2", "output_3", "output_4", "output_5", "read_out"]
-
-    default_cmaps = [
-        cmap_name,
-        "plasma",
-        "inferno",
-        "magma",
-        "cividis",
-        "cubehelix",
-        "winter",
-        "spring",
-        "cool",
-        "autumn",
-    ]
-    base_cmaps = (layer_cmap_names or default_cmaps) or default_cmaps
-
-    imgs_device = imgs.to(args.device)
-    layer_step_features = OrderedDict()
-    for layer_name in target_layers:
-        activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=steps)
-        if max_steps is not None:
-            activations = activations[:max_steps]
-        step_features = OrderedDict(
-            (f"{layer_name}_t{idx}", feat) for idx, feat in enumerate(activations)
-        )
-        layer_step_features[layer_name] = step_features
-
-    flat_features = OrderedDict()
-    layer_key_map = OrderedDict()
-    for layer_name, step_features in layer_step_features.items():
-        keys = list(step_features.keys())
-        layer_key_map[layer_name] = keys
-        for key in keys:
-            flat_features[key] = step_features[key]
-
-    if not flat_features:
-        raise ValueError("No activations collected; check layer names or steps.")
-
-    rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
-    rdms = rdms_flat
-    ax_ticks = list(flat_features.keys())
-
-    include_labels = labels is not None
-    if include_labels:
-        label_rdm, _ = calc_rdms(
-            args,
-            {"labels": F.one_hot(labels).float().to(args.device)},
-            method=rdm_calc_method,
-        )
-        rdms = rsatoolbox.rdm.concat((rdms, label_rdm))
-        ax_ticks.append("labels")
-
-    rdms_comp = rsatoolbox.rdm.compare(rdms, rdms, method=rdm_comp_method)
-    if rdm_comp_method == "cosine":
-        rdms_comp = np.clip(rdms_comp, -1, 1)
-        rdms_comp = np.arccos(rdms_comp)
-    rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-    rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-
-    transformer = manifold.MDS(
-        n_components=2,
-        max_iter=1000,
-        n_init=10,
-        normalized_stress="auto",
-        dissimilarity="precomputed",
-    )
-    dims = transformer.fit_transform(rdms_comp)
-    coord_map = {tick: dims[idx] for idx, tick in enumerate(ax_ticks)}
-
-    coords_array = np.vstack(list(coord_map.values()))
-    amin, amax = coords_array.min(), coords_array.max()
-    center = (amin + amax) / 2.0
-    half_span = max((amax - amin) / 2.0, 1e-6)
-    axis_min = center - half_span * 1.4
-    axis_max = center + half_span * 1.4
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-
-    for idx, (layer_name, keys) in enumerate(layer_key_map.items()):
-        coords = [coord_map[k] for k in keys if k in coord_map]
-        if not coords:
-            continue
-        coords = np.vstack(coords)
-        num_steps = len(coords)
-        cmap = plt.get_cmap(base_cmaps[idx % len(base_cmaps)])
-        colors = cmap(np.linspace(0.2, 0.95, num_steps))
-        for step_idx in range(num_steps - 1):
-            ax.plot(
-                coords[step_idx:step_idx + 2, 0],
-                coords[step_idx:step_idx + 2, 1],
-                color=colors[step_idx],
-                linewidth=2,
-            )
-        ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, label=layer_name, edgecolors="none")
-
-    if include_labels:
-        label_coord = coord_map["labels"]
-        ax.plot(label_coord[0], label_coord[1], color="m", marker="*", markersize=12, label="labels")
-
-    ax.set_xlim([axis_min, axis_max])
-    ax.set_ylim([axis_min, axis_max])
-    ax.set_xlabel("dim 1")
-    ax.set_ylabel("dim 2")
-    ax.set_title("Merged representational trajectories")
-    ax.legend(loc="best", fontsize=8)
-
-    fig.tight_layout()
-    if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
-    return fig
-
-# plot for all models in the cache
-def plot_cache_models_joint_embedding(
-    args,
-    imgs,
-    labels,
-    x,
-    cache_dir="blt_local_cache",
-    max_steps=None,
-):
-    cache_root = Path(cache_dir)
-    model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
-    output_paths = []
-
-    for model_path in model_files:
-        model_name = model_path.parent.name
-        model, _, _ = load_model_path(str(model_path), print_model=False)
-        model.to(args.device)
-        model.eval()
-
-        steps = getattr(model, "times", getattr(model, "num_recurrence", None))
-        if max_steps is not None:
-            steps = min(steps, max_steps) if steps is not None else max_steps
-
-        save_path = f"representational_geometry_grid_aligned_{model_name}.png"
-        fig = plot_recurrence_grid_joint_embedding(
-            args,
-            model,
-            imgs,
-            labels,
-            layer_categories,
-            steps=steps,
-            max_steps=max_steps,
-            save_path=save_path,
-        )
-        output_paths.append(save_path)
-
-    return output_paths
-
-def plot_model_merged_trajectories_1(
-    args,
-    model_name,
-    model,
-    imgs,
-    labels,
-    steps=None,
-    target_layers=None,
-    max_steps=None,
-    rdm_calc_method="euclidean",
-    rdm_comp_method="cosine"
-):  
-
-    save_path = f"rep_geo_{model_name}.png"
-    save_path = str(save_path)
-
-    if steps is None:
-        steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
-
-    if target_layers is None:
-        target_layers = ["output_0", "output_1", "output_2", "output_3", "output_4", "output_5"]
-
-    # --- MODIFIED SECTION: Removed old colormap logic ---
-    # The old 'default_cmaps' and 'base_cmaps' lists are removed,
-    # as we will now generate custom maps dynamically.
-    # ----------------------------------------------------
-
-    imgs_device = imgs.to(args.device)
-    layer_step_features = OrderedDict()
-    for layer_name in target_layers:
-        activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=steps)
-        if max_steps is not None:
-            activations = activations[:max_steps]
-        step_features = OrderedDict(
-            (f"{layer_name}_t{idx}", feat) for idx, feat in enumerate(activations)
-        )
-        layer_step_features[layer_name] = step_features
-
-    flat_features = OrderedDict()
-    layer_key_map = OrderedDict()
-    for layer_name, step_features in layer_step_features.items():
-        keys = list(step_features.keys())
-        layer_key_map[layer_name] = keys
-        for key in keys:
-            flat_features[key] = step_features[key]
-
-    rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
-    rdms = rdms_flat
-    ax_ticks = list(flat_features.keys())
-
-    include_labels = labels is not None
-    # temporarily adding a label removal 
-    include_labels = False
-    if include_labels:
-        label_rdm, _ = calc_rdms(
-            args,
-            {"labels": F.one_hot(labels).float().to(args.device)},
-            method=rdm_calc_method,
-        )
-        rdms = rsatoolbox.rdm.concat((rdms, label_rdm))
-        ax_ticks.append("labels")
-
-    rdms_comp = rsatoolbox.rdm.compare(rdms, rdms, method=rdm_comp_method)
-    if rdm_comp_method == "cosine":
-        rdms_comp = np.clip(rdms_comp, -1, 1)
-        rdms_comp = np.arccos(rdms_comp)
-    rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-    rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-
-    transformer = manifold.MDS(
-        n_components=2,
-        max_iter=1000,
-        n_init=10,
-        normalized_stress="auto",
-        dissimilarity="precomputed",
-    )
-    dims = transformer.fit_transform(rdms_comp)
-    coord_map = {tick: dims[idx] for idx, tick in enumerate(ax_ticks)}
-
-    coords_array = np.vstack(list(coord_map.values()))
-    amin, amax = coords_array.min(), coords_array.max()
-    center = (amin + amax) / 2.0
-    half_span = max((amax - amin) / 2.0, 1e-6)
-    axis_min = center - half_span * 1.4
-    axis_max = center + half_span * 1.4
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-
-    # --- NEW: Get distinct base colors from a qualitative map ---
-    # 'tab10' provides 10 highly distinct colors.
-    qualitative_cmap = plt.get_cmap("tab10")
-    num_layers = len(layer_key_map)
+    rows, cols = layout
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
     
-    # Create a list of base colors for each layer
-    if num_layers <= 10:
-        base_colors = qualitative_cmap(np.linspace(0, 1, 10))[:num_layers]
-    else:
-        # Fallback if you have more than 10 layers (colors will repeat)
-        base_colors = qualitative_cmap(np.linspace(0, 1, num_layers))
-    # -----------------------------------------------------------
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
 
-    for idx, (layer_name, keys) in enumerate(layer_key_map.items()):
-        coords = [coord_map[k] for k in keys if k in coord_map]
-        if not coords:
-            continue
-        coords = np.vstack(coords)
-        num_steps = len(coords)
+    for i, ax in enumerate(axes):
+        if i < len(plot_list):
+            mds_transformer, matrix, plot_title = plot_list[i]
 
-        # --- MODIFIED: Create a custom colormap for this layer ---
-        
-        # 1. Get the distinct base color for this specific layer
-        layer_base_color = base_colors[idx]
-        
-        # 2. Create a new sequential colormap that fades from a light
-        #    neutral color (e.g., light grey) to this layer's base color.
-        #    You can change "#F0F0F0" (light grey) to "#FFFFFF" (white) if you prefer.
-        cmap = LinearSegmentedColormap.from_list(
-            f"{layer_name}_custom_cmap", 
-            ["#F0F0F0", layer_base_color]
-        )
-        # ---------------------------------------------------------
+            embedded = mds_transformer.embedding_
+            fitted_distances = pdist(embedded, metric='euclidean')
+            triu_indices = np.triu_indices_from(matrix, k=1)
+            original_dissimilarities = matrix[triu_indices]
 
-        # This part remains the same, but now uses your new custom cmap
-        colors = cmap(np.linspace(0.2, 0.95, num_steps))
-        for step_idx in range(num_steps - 1):
-            ax.plot(
-                coords[step_idx:step_idx + 2, 0],
-                coords[step_idx:step_idx + 2, 1],
-                color=colors[step_idx],
-                linewidth=2,
-            )
-        ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, label=layer_name, edgecolors="none")
+            ax.scatter(original_dissimilarities, fitted_distances, alpha=0.5, s=10, c='#41B6E6')
+            ax.plot([original_dissimilarities.min(), original_dissimilarities.max()],
+                    [original_dissimilarities.min(), original_dissimilarities.max()], color='#EF002B', linewidth=2, linestyle='--')
+            ax.set_xlabel('Original Dissimilarities')
+            ax.set_ylabel('Fitted Distances')
+            ax.set_title(plot_title)
 
-    if include_labels:
-        label_coord = coord_map["labels"]
-        ax.plot(label_coord[0], label_coord[1], color="m", marker="*", markersize=12, label="labels")
+            for spine in ax.spines.values():
+                spine.set_color('black')
+            ax.set_facecolor('white')
+            ax.grid(False)
 
-    ax.set_xlim([axis_min, axis_max])
-    ax.set_ylim([axis_min, axis_max])
-    ax.set_xlabel("dim 1")
-    ax.set_ylabel("dim 2")
-    ax.set_title("Merged Representational Trajectories")
-    ax.legend(loc="best", fontsize=8)
+            if hasattr(mds_transformer, 'stress_'):
+                ax.text(0.05, 0.95, f'Stress: {mds_transformer.stress_:.4f}',
+                        transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+        else:
+            ax.axis('off')
 
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight")
+        fig.savefig(save_path, bbox_inches='tight')
+        plt.close(fig)
+
     return fig
 
-def plot_cache_models_joint_embedding_merged(
-    args,
-    imgs,
-    labels,
-    cache_dir="blt_local_cache",
-    steps=None,
-    target_layers=None,
-    max_steps=None,
-    rdm_calc_method="euclidean",
-    rdm_comp_method="cosine"
-):
-    cache_root = Path(cache_dir)
-    model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
-    output_paths = []
-
-    # Collect all flat_features across models
-    all_flat_features = OrderedDict()
-    model_layer_maps = OrderedDict()  # To keep track of which features belong to which model
-
-    for model_path in model_files:
-        model_name = model_path.parent.name
-        model_name = "_".join(model_name.split("_")[:2])
-        print(f"Processing: {model_name}")
-        model, _, _ = load_model_path(str(model_path), print_model=False)
-        model.to(args.device)
-        model.eval()
-
-        if steps is None:
-            steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
-
-        if target_layers is None:
-            target_layers = ["output_0", "output_1", "output_2", "output_3", "output_4", "output_5"]
-
-        imgs_device = imgs.to(args.device)
-        layer_step_features = OrderedDict()
-        for layer_name in target_layers:
-            activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=steps)
-            if max_steps is not None:
-                activations = activations[:max_steps]
-            step_features = OrderedDict(
-                (f"{layer_name}_t{idx}", feat) for idx, feat in enumerate(activations)
-            )
-            layer_step_features[layer_name] = step_features
-
-        flat_features = OrderedDict()
-        layer_key_map = OrderedDict()
-        for layer_name, step_features in layer_step_features.items():
-            keys = list(step_features.keys())
-            layer_key_map[layer_name] = keys
-            for key in keys:
-                flat_features[key] = step_features[key]
-
-        # Prefix keys with model_name to avoid conflicts
-        prefixed_flat_features = {f"{model_name}_{k}": v for k, v in flat_features.items()}
-        all_flat_features.update(prefixed_flat_features)
-        model_layer_maps[model_name] = {
-            'layer_key_map': layer_key_map,
-            'prefixed_keys': list(prefixed_flat_features.keys())
-        }
-
-    # Compute RDMs for all combined features
-    rdms_flat, _ = calc_rdms(args, all_flat_features, method=rdm_calc_method)
-    rdms = rdms_flat
-    ax_ticks = list(all_flat_features.keys())
-
-    include_labels = labels is not None
-    # Temporarily disable labels as in plot_model_merged_trajectories_1
-    include_labels = False
-    if include_labels:
-        label_rdm, _ = calc_rdms(
-            args,
-            {"labels": F.one_hot(labels).float().to(args.device)},
-            method=rdm_calc_method,
-        )
-        rdms = rsatoolbox.rdm.concat((rdms, label_rdm))
-        ax_ticks.append("labels")
-
-    rdms_comp = rsatoolbox.rdm.compare(rdms, rdms, method=rdm_comp_method)
-    if rdm_comp_method == "cosine":
-        rdms_comp = np.clip(rdms_comp, -1, 1)
-        rdms_comp = np.arccos(rdms_comp)
-    rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-    rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-
-    # Single MDS transformation for all
-    transformer = manifold.MDS(
-        n_components=2,
-        max_iter=2000,
-        n_init=20,
-        normalized_stress="auto",
-        dissimilarity="precomputed",
-    )
-    dims = transformer.fit_transform(rdms_comp)
-    coord_map = {tick: dims[idx] for idx, tick in enumerate(ax_ticks)}
-
-    coords_array = np.vstack(list(coord_map.values()))
-    amin, amax = coords_array.min(), coords_array.max()
-    center = (amin + amax) / 2.0
-    half_span = max((amax - amin) / 2.0, 1e-6)
-    axis_min = center - half_span * 1.4
-    axis_max = center + half_span * 1.4
-
-    # Get distinct base colors
-    qualitative_cmap = plt.get_cmap("tab10")
-    num_layers = max(len(layer_key_map) for layer_key_map in [m['layer_key_map'] for m in model_layer_maps.values()])
-    if num_layers <= 10:
-        base_colors = qualitative_cmap(np.linspace(0, 1, 10))[:num_layers]
-    else:
-        base_colors = qualitative_cmap(np.linspace(0, 1, num_layers))
-
-    # Now plot for each model separately
-    for model_path in model_files:
-        model_name = model_path.parent.name
-        model_name = "_".join(model_name.split("_")[:2])
-        layer_key_map = model_layer_maps[model_name]['layer_key_map']
-        prefixed_keys = model_layer_maps[model_name]['prefixed_keys']
-
-        fig, ax = plt.subplots(figsize=(8, 6))
-
-        for idx, (layer_name, keys) in enumerate(layer_key_map.items()):
-            # Map to prefixed keys
-            prefixed_coords_keys = [f"{model_name}_{k}" for k in keys]
-            coords = [coord_map[k] for k in prefixed_coords_keys if k in coord_map]
-            if not coords:
-                continue
-            coords = np.vstack(coords)
-            num_steps = len(coords)
-
-            layer_base_color = base_colors[idx % len(base_colors)]
-            cmap = LinearSegmentedColormap.from_list(
-                f"{layer_name}_custom_cmap", 
-                ["#F0F0F0", layer_base_color]
-            )
-
-            colors = cmap(np.linspace(0.2, 0.95, num_steps))
-            for step_idx in range(num_steps - 1):
-                ax.plot(
-                    coords[step_idx:step_idx + 2, 0],
-                    coords[step_idx:step_idx + 2, 1],
-                    color=colors[step_idx],
-                    linewidth=2,
-                )
-            ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, label=layer_name, edgecolors="none")
-
-        if include_labels:
-            label_coord = coord_map["labels"]
-            ax.plot(label_coord[0], label_coord[1], color="m", marker="*", markersize=12, label="labels")
-
-        ax.set_xlim([axis_min, axis_max])
-        ax.set_ylim([axis_min, axis_max])
-        ax.set_xlabel("dim 1")
-        ax.set_ylabel("dim 2")
-        ax.set_title(f"Representational Trajectories - {model_name}")
-        ax.legend(loc="best", fontsize=8)
-
-        fig.tight_layout()
-        save_path = f"rep_geo_single_mds_{model_name}.png"
-        fig.savefig(save_path, bbox_inches="tight")
-        output_paths.append(save_path)
-
-    return output_paths
-
-def plot_cache_models_joint_embedding_merged_layers(
+def plot_rep_traj_single_mds(
     args,
     imgs,
     labels,
@@ -1411,10 +713,11 @@ def plot_cache_models_joint_embedding_merged_layers(
     rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
     rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
 
+    plot_dim = getattr(args, "plot_dim", 3)
     # Comment: A single MDS transformer is fitted across all layers so every subplot
     # reuses the same embedding frame, allowing direct visual comparison of trajectories.
     transformer = manifold.MDS(
-        n_components=2,
+        n_components=plot_dim,
         # to metric or to non-metric?
         metric=True,
         max_iter=3000,
@@ -1423,6 +726,14 @@ def plot_cache_models_joint_embedding_merged_layers(
         dissimilarity="precomputed",
     )
     dims = transformer.fit_transform(rdms_comp)
+
+    results_dir = Path("results") / ("3D" if plot_dim == 3 else "2D")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    shepard_path = results_dir / "shepard_single_mds.png"
+    plot_shepard_diagram(transformer, rdms_comp, save_path=shepard_path)
+    output_paths.append(str(shepard_path))
+
     coord_map = {tick: dims[idx] for idx, tick in enumerate(ax_ticks)}
 
     coords_array = np.vstack(list(coord_map.values()))
@@ -1448,6 +759,7 @@ def plot_cache_models_joint_embedding_merged_layers(
             cols,
             figsize=(figsize_per_panel * cols, figsize_per_panel * rows * 1.2),
             squeeze=False,
+            subplot_kw={'projection': '3d'} if plot_dim == 3 else None,
         )
 
         for idx, layer_name in enumerate(layer_order):
@@ -1464,15 +776,31 @@ def plot_cache_models_joint_embedding_merged_layers(
             cmap = plt.get_cmap("viridis_r")
             colors = cmap(np.linspace(0, 1, num_steps))
 
-            for step_idx in range(num_steps - 1):
-                ax.plot(
-                    coords[step_idx:step_idx + 2, 0],
-                    coords[step_idx:step_idx + 2, 1],
-                    color=colors[step_idx],
-                    linewidth=2,
-                )
-            ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, edgecolors="none")
-            ax.plot(coords[0, 0], coords[0, 1], color="k", marker="s", markersize=5)
+            if plot_dim == 3:
+                for step_idx in range(num_steps - 1):
+                    ax.plot(
+                        coords[step_idx:step_idx + 2, 0],
+                        coords[step_idx:step_idx + 2, 1],
+                        coords[step_idx:step_idx + 2, 2],
+                        color=colors[step_idx],
+                        linewidth=2,
+                    )
+                ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c=colors, s=30, edgecolors="none")
+                ax.plot(coords[0, 0], coords[0, 1], coords[0, 2], color="k", marker="s", markersize=5)
+                ax.set_zlim([axis_min, axis_max])
+                if idx == 0:
+                    ax.set_zlabel("dim 3")
+            else:
+                for step_idx in range(num_steps - 1):
+                    ax.plot(
+                        coords[step_idx:step_idx + 2, 0],
+                        coords[step_idx:step_idx + 2, 1],
+                        color=colors[step_idx],
+                        linewidth=2,
+                    )
+                ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, edgecolors="none")
+                ax.plot(coords[0, 0], coords[0, 1], color="k", marker="s", markersize=5)
+
             ax.set_xlim([axis_min, axis_max])
             ax.set_ylim([axis_min, axis_max])
             ax.set_title(layer_name)
@@ -1486,7 +814,6 @@ def plot_cache_models_joint_embedding_merged_layers(
             ax.set_facecolor('white')
             ax.grid(False)
 
-
             # distance plotting
             # Total path length: The sum of Euclidean distances between consecutive points in the MDS space. This measures the overall amount of movement along the trajectory.
 
@@ -1496,12 +823,14 @@ def plot_cache_models_joint_embedding_merged_layers(
             avg_step_length = total_path_length / (num_steps - 1)
             
             # Add metrics as text on the subplot
-            ax.text(0.05, 0.95, f'Total: {total_path_length:.2f}\nAvg: {avg_step_length:.2f}', 
-                    transform=ax.transAxes, fontsize=8, verticalalignment='top', 
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            text_str = f'Total: {total_path_length:.2f}\nAvg: {avg_step_length:.2f}'
+            text_kwargs = dict(transform=ax.transAxes, fontsize=8, verticalalignment='top', 
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            if plot_dim == 3:
+                ax.text2D(0.05, 0.95, text_str, **text_kwargs)
+            else:
+                ax.text(0.05, 0.95, text_str, **text_kwargs)
 
-        # 1. Adjust Colorbar Position
-        # Moved 'y' up slightly to 0.08 to ensure labels don't hit the figure edge
         colorbar_width = 2.5 / num_layers
         colorbar_left = (1.0 - colorbar_width) / 2.0
         cbar_ax = fig.add_axes([colorbar_left, 0.08, colorbar_width, 0.02])
@@ -1515,70 +844,17 @@ def plot_cache_models_joint_embedding_merged_layers(
         cbar.set_ticklabels(['early', 'mid', 'late'])
 
         fig.suptitle(f"Representational Trajectories - {model_name}", y=1.02)
-
-        # 2. THE CRITICAL FIX: Add the 'rect' parameter
-        # rect=[left, bottom, right, top] in normalized (0,1) coordinates.
-        # We set bottom=0.15 to leave the bottom 15% of the figure empty 
-        # for the colorbar and x-axis labels.
         fig.tight_layout(rect=[0, 0.15, 1, 1])
 
-        save_path = f"rep_geo_single_mds_{model_name}_2x3.png"
+        save_path = results_dir / f"rep_geo_single_mds_{model_name}_2x3.png"
         fig.savefig(save_path, bbox_inches="tight")
-        output_paths.append(save_path)
+        output_paths.append(str(save_path))
         
         plt.close(fig)
 
     return output_paths, transformer, rdms_comp
 
-def plot_multiple_shepard_diagrams(mds_results, save_path=None, layout=(2, 3)):
-    """
-    Plots multiple Shepard diagrams in a grid.
-
-    Inputs:
-    - mds_results: A list of tuples, where each tuple contains
-                   (mds_transformer, dissimilarity_matrix, title).
-    - save_path: Optional path to save the figure.
-    - layout: A tuple for the subplot grid layout.
-    """
-    from scipy.spatial.distance import pdist
-    rows, cols = layout
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4))
-    if rows == 1 and cols == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
-
-    for i, (mds_transformer, dissimilarity_matrix, title) in enumerate(mds_results):
-        ax = axes[i]
-
-        embedded = mds_transformer.embedding_
-        fitted_distances = pdist(embedded, metric='euclidean')
-        triu_indices = np.triu_indices_from(dissimilarity_matrix, k=1)
-        original_dissimilarities = dissimilarity_matrix[triu_indices]
-
-        ax.scatter(original_dissimilarities, fitted_distances, alpha=0.5, s=10, c='#41B6E6')
-        ax.plot([original_dissimilarities.min(), original_dissimilarities.max()],
-                [original_dissimilarities.min(), original_dissimilarities.max()], color='#EF002B', linewidth=2, linestyle='--')
-        ax.set_xlabel('Original Dissimilarities')
-        ax.set_ylabel('Fitted Distances')
-        ax.set_title(title)
-
-        for spine in ax.spines.values():
-            spine.set_color('black')
-        ax.set_facecolor('white')
-        ax.grid(False)
-
-        if hasattr(mds_transformer, 'stress_'):
-            ax.text(0.05, 0.95, f'Stress: {mds_transformer.stress_:.4f}',
-                    transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-
-    fig.tight_layout()
-    if save_path is not None:
-        fig.savefig(save_path, bbox_inches='tight')
-    plt.close(fig)
-    return fig
-
-def plot_cache_models_joint_embedding_merged_layers_separate_mds(
+def plot_rep_traj_separate_mds(
     args,
     imgs,
     labels,
@@ -1591,7 +867,7 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
     figsize_per_panel=4.0,
 ):
     """
-    For each vggface2 BLT model in the cache, fit a separate MDS per layer
+    For vggface2 BLT model in the cache, fit a separate MDS per layer
     (rather than one shared embedding across layers) and produce two figures:
     1) a 1xN grid of trajectories (one subplot per layer) styled like
        `plot_cache_models_joint_embedding_merged_layers`, and
@@ -1602,6 +878,10 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
     model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
     trajectory_paths = []
     shepard_paths = []
+
+    plot_dim = getattr(args, "plot_dim", 3)
+    results_dir = Path("results") / ("3D" if plot_dim == 3 else "2D")
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     if not model_files:
         return trajectory_paths, shepard_paths
@@ -1672,7 +952,7 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
             print(f"RDM dimension for {layer_name}: {rdms_comp.shape}")
 
             transformer = manifold.MDS(
-                n_components=2,
+                n_components=plot_dim,
                 metric=True,
                 max_iter=3000,
                 n_init=30,
@@ -1681,7 +961,7 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
             )
             dims = transformer.fit_transform(rdms_comp)
             coord_map = {tick: dims[idx] for idx, tick in enumerate(ax_ticks)}
-            coords = np.vstack(list(coord_map.values())) if coord_map else np.zeros((0, 2))
+            coords = np.vstack(list(coord_map.values())) if coord_map else np.zeros((0, plot_dim))
 
             layer_results[layer_name] = {
                 "coords": coords,
@@ -1711,6 +991,7 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
             cols,
             figsize=(figsize_per_panel * cols, figsize_per_panel * rows * 1.2),
             squeeze=False,
+            subplot_kw={'projection': '3d'} if plot_dim == 3 else None,
         )
 
         for idx, (layer_name, result) in enumerate(layer_results.items()):
@@ -1725,15 +1006,31 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
             cmap = plt.get_cmap("viridis_r")
             colors = cmap(np.linspace(0, 1, num_steps))
 
-            for step_idx in range(num_steps - 1):
-                ax.plot(
-                    coords[step_idx : step_idx + 2, 0],
-                    coords[step_idx : step_idx + 2, 1],
-                    color=colors[step_idx],
-                    linewidth=2,
-                )
-            ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, edgecolors="none")
-            ax.plot(coords[0, 0], coords[0, 1], color="k", marker="s", markersize=5)
+            if plot_dim == 3:
+                for step_idx in range(num_steps - 1):
+                    ax.plot(
+                        coords[step_idx : step_idx + 2, 0],
+                        coords[step_idx : step_idx + 2, 1],
+                        coords[step_idx : step_idx + 2, 2],
+                        color=colors[step_idx],
+                        linewidth=2,
+                    )
+                ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c=colors, s=30, edgecolors="none")
+                ax.plot(coords[0, 0], coords[0, 1], coords[0, 2], color="k", marker="s", markersize=5)
+                ax.set_zlim([axis_min, axis_max])
+                if idx == 0:
+                    ax.set_zlabel("dim 3")
+            else:
+                for step_idx in range(num_steps - 1):
+                    ax.plot(
+                        coords[step_idx : step_idx + 2, 0],
+                        coords[step_idx : step_idx + 2, 1],
+                        color=colors[step_idx],
+                        linewidth=2,
+                    )
+                ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, edgecolors="none")
+                ax.plot(coords[0, 0], coords[0, 1], color="k", marker="s", markersize=5)
+
             ax.set_xlim([axis_min, axis_max])
             ax.set_ylim([axis_min, axis_max])
             ax.set_title(layer_name)
@@ -1749,15 +1046,13 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
             distances = np.linalg.norm(coords[1:] - coords[:-1], axis=1)
             total_path_length = np.sum(distances)
             avg_step_length = total_path_length / (num_steps - 1) if num_steps > 1 else 0.0
-            ax.text(
-                0.05,
-                0.95,
-                f"Total: {total_path_length:.2f}\nAvg: {avg_step_length:.2f}",
-                transform=ax.transAxes,
-                fontsize=8,
-                verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-            )
+            text_str = f"Total: {total_path_length:.2f}\nAvg: {avg_step_length:.2f}"
+            text_kwargs = dict(transform=ax.transAxes, fontsize=8, verticalalignment="top",
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            if plot_dim == 3:
+                ax.text2D(0.05, 0.95, text_str, **text_kwargs)
+            else:
+                ax.text(0.05, 0.95, text_str, **text_kwargs)
 
         colorbar_width = 2.5 / num_layers
         colorbar_left = (1.0 - colorbar_width) / 2.0
@@ -1770,22 +1065,232 @@ def plot_cache_models_joint_embedding_merged_layers_separate_mds(
 
         fig.suptitle(f"Separate MDS Trajectories - {model_name}", y=1.02)
         fig.tight_layout(rect=[0, 0.15, 1, 1])
-        traj_path = f"rep_geo_separate_mds_{model_name}_2x3.png"
+        traj_path = results_dir / f"rep_geo_separate_mds_{model_name}_2x3.png"
         fig.savefig(traj_path, bbox_inches="tight")
         plt.close(fig)
-        trajectory_paths.append(traj_path)
+        trajectory_paths.append(str(traj_path))
 
         # Shepard diagrams for each layer using helper
         mds_results = [
             (result["transformer"], result["rdm"], f"{layer_name}")
             for layer_name, result in layer_results.items()
         ]
-        shepard_path = f"shepard_separate_mds_{model_name}_2x3.png"
-        plot_multiple_shepard_diagrams(
+        shepard_path = results_dir / f"shepard_separate_mds_{model_name}_2x3.png"
+        plot_shepard_diagram(
             mds_results,
             save_path=shepard_path,
             layout=(2, 3),
         )
-        shepard_paths.append(shepard_path)
+        shepard_paths.append(str(shepard_path))
 
     return trajectory_paths, shepard_paths
+
+def plot_joint_3d_interactive(
+    args,
+    imgs,
+    labels,
+    cache_dir="blt_local_cache",
+    steps=None,
+    target_layers=None,
+    max_steps=None,
+    rdm_calc_method="euclidean",
+    rdm_comp_method="cosine",
+):
+    """
+    Plots all layers and time steps in a single 3D MDS space.
+    Produces both a static Matplotlib plot and an interactive Plotly HTML plot.
+    """
+    cache_root = Path(cache_dir)
+    model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    output_paths = []
+
+    if not model_files:
+        return output_paths
+
+    for model_path in model_files:
+        model_name = model_path.parent.name
+        model_name = "_".join(model_name.split("_")[:2])
+        if "vggface" not in model_name or "imagenet" in model_name:
+            continue
+
+        print(f"Processing (Joint 3D Structure): {model_name}")
+        model, _, _ = load_model_path(str(model_path), print_model=False)
+        model.to(args.device)
+        model.eval()
+
+        model_steps = steps
+        if model_steps is None:
+            model_steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
+
+        layer_list = target_layers
+        if layer_list is None:
+            layer_list = ["output_0", "output_1", "output_2", "output_3", "output_4", "output_5"]
+
+        imgs_device = imgs.to(args.device)
+        
+        # Extract features
+        layer_step_features = OrderedDict()
+        for layer_name in layer_list:
+            activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=model_steps)
+            if max_steps is not None:
+                activations = activations[:max_steps]
+            
+            step_features = OrderedDict(
+                (f"{layer_name}_t{idx}", feat) for idx, feat in enumerate(activations)
+            )
+            layer_step_features[layer_name] = step_features
+
+        # Flatten for RDM
+        flat_features = OrderedDict()
+        for layer_name in layer_list:
+            for t_idx in range(len(layer_step_features[layer_name])):
+                key = f"{layer_name}_t{t_idx}"
+                flat_features[key] = layer_step_features[layer_name][key]
+
+        if not flat_features:
+            continue
+
+        # Calc RDMs
+        rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
+        
+        # Compare RDMs
+        rdms_comp = rsatoolbox.rdm.compare(rdms_flat, rdms_flat, method=rdm_comp_method)
+        if rdm_comp_method == "cosine":
+            rdms_comp = np.arccos(np.clip(rdms_comp, -1, 1))
+        rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
+        rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
+
+        # MDS
+        transformer = manifold.MDS(
+            n_components=3,
+            metric=True,
+            max_iter=3000,
+            n_init=30,
+            normalized_stress=True,
+            dissimilarity="precomputed",
+        )
+        dims = transformer.fit_transform(rdms_comp)
+        
+        # Map keys to coords
+        keys = list(flat_features.keys())
+        coord_map = {k: dims[i] for i, k in enumerate(keys)}
+
+        # Prepare data for plotting
+        num_layers = len(layer_list)
+        first_layer_keys = list(layer_step_features[layer_list[0]].keys())
+        num_steps = len(first_layer_keys)
+        cmap = plt.get_cmap("viridis")
+        layer_colors = cmap(np.linspace(0, 1, num_layers))
+
+        results_dir = Path("results") / "3D_structure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        # --- 1. Static Matplotlib Plot ---
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        for l_idx, layer_name in enumerate(layer_list):
+            layer_coords = []
+            for t in range(num_steps):
+                key = f"{layer_name}_t{t}"
+                if key in coord_map:
+                    layer_coords.append(coord_map[key])
+            
+            layer_coords = np.array(layer_coords)
+            if len(layer_coords) > 0:
+                ax.plot(layer_coords[:, 0], layer_coords[:, 1], layer_coords[:, 2], 
+                        color=layer_colors[l_idx], label=f"{layer_name}", linewidth=2, alpha=0.9)
+                ax.scatter(layer_coords[:, 0], layer_coords[:, 1], layer_coords[:, 2], 
+                           color=layer_colors[l_idx], s=25)
+                ax.text(layer_coords[0, 0], layer_coords[0, 1], layer_coords[0, 2], f"{layer_name}", fontsize=9)
+
+                # Connect to the start of the next layer
+                if l_idx < num_layers - 1:
+                    next_layer_name = layer_list[l_idx + 1]
+                    next_layer_start = None
+                    for t_next in range(num_steps):
+                        key_next = f"{next_layer_name}_t{t_next}"
+                        if key_next in coord_map:
+                            next_layer_start = coord_map[key_next]
+                            break
+                    
+                    if next_layer_start is not None:
+                        start_pt = layer_coords[-1]
+                        end_pt = next_layer_start
+                        ax.plot([start_pt[0], end_pt[0]], [start_pt[1], end_pt[1]], [start_pt[2], end_pt[2]],
+                                color='gray', linestyle='--', linewidth=1, alpha=0.5)
+
+        ax.set_xlabel("Dim 1")
+        ax.set_ylabel("Dim 2")
+        ax.set_zlabel("Dim 3")
+        ax.set_title(f"Joint Layer-Time Structure: {model_name}")
+        ax.legend()
+
+        save_path = results_dir / f"joint_structure_{model_name}.png"
+        fig.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+        output_paths.append(str(save_path))
+
+        # --- 2. Interactive Plotly Plot ---
+        fig_interactive = go.Figure()
+        
+        for l_idx, layer_name in enumerate(layer_list):
+            layer_coords = []
+            for t in range(num_steps):
+                key = f"{layer_name}_t{t}"
+                if key in coord_map:
+                    layer_coords.append(coord_map[key])
+            layer_coords = np.array(layer_coords)
+            
+            if len(layer_coords) > 0:
+                c_hex = mpl.colors.to_hex(layer_colors[l_idx])
+                
+                # Layer trajectory
+                fig_interactive.add_trace(go.Scatter3d(
+                    x=layer_coords[:, 0], y=layer_coords[:, 1], z=layer_coords[:, 2],
+                    mode='lines+markers',
+                    name=layer_name,
+                    line=dict(color=c_hex, width=5),
+                    marker=dict(size=4, color=c_hex)
+                ))
+                
+                # Connection to next layer
+                if l_idx < num_layers - 1:
+                    next_layer_name = layer_list[l_idx + 1]
+                    next_layer_start = None
+                    for t_next in range(num_steps):
+                        key_next = f"{next_layer_name}_t{t_next}"
+                        if key_next in coord_map:
+                            next_layer_start = coord_map[key_next]
+                            break
+                    
+                    if next_layer_start is not None:
+                        start_pt = layer_coords[-1]
+                        end_pt = next_layer_start
+                        fig_interactive.add_trace(go.Scatter3d(
+                            x=[start_pt[0], end_pt[0]],
+                            y=[start_pt[1], end_pt[1]],
+                            z=[start_pt[2], end_pt[2]],
+                            mode='lines',
+                            line=dict(color='gray', dash='dash', width=3),
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+
+        fig_interactive.update_layout(
+            title=f"Joint Layer-Time Structure: {model_name}",
+            scene=dict(
+                xaxis_title='Dim 1',
+                yaxis_title='Dim 2',
+                zaxis_title='Dim 3'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40),
+            width=1000,
+            height=800
+        )
+        
+        html_path = results_dir / f"joint_structure_{model_name}.html"
+        fig_interactive.write_html(str(html_path))
+        output_paths.append(str(html_path))
+        
+    return output_paths

@@ -1,28 +1,24 @@
 import torch
 import argparse
 import json
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 from collections import OrderedDict
-from pathlib import Path
 
 import random
 import numpy as np
 
-from geometry_path import sample_images, plot_model_merged_trajectories_1, amir_loaders, plot_cache_models_joint_embedding_merged_layers, plot_shepard_diagram, plot_cache_models_joint_embedding_merged_layers_separate_mds
+from geometry_path import sample_images, amir_loaders, plot_rep_traj_single_mds, plot_rep_traj_separate_mds, plot_joint_3d_interactive
 from analyze_representations import load_model_path
 
 # visualizing the model 
 # from tikz_visualizer import visualize_blt, TikzComputationGraphVisualizer
 
-# better traceback hilighting 
+# better traceback hilighting for debugging
 from rich.traceback import install
 install()
 
-plt.style.use('ggplot') 
-mpl.rcParams['font.family'] = "Arial"
-mpl.rcParams['font.size'] = 12
-mpl.rcParams['figure.dpi'] = 300
+# load custom matplotlib style
+plt.style.use('./blt.mplstyle')
 
 def build_args():
     parser = argparse.ArgumentParser(description='Kasper Dataset Example')
@@ -53,10 +49,13 @@ def build_args():
                     help='path to the trained model checkpoint')
     parser.add_argument('--layer-categories', type=str,
                         default=json.dumps({
-                            "Layers 1": ["conv_0_0", "conv_1_1", "conv_2_2"],
-                            "Layers 2": ["conv_3_3", "conv_4_4", "conv_5_5"]
+                            "Outputs": ["output_0", "output_1", "output_2", "output_3", "output_4", "output_5"]
                         }),
-                        help='JSON string describing the layer categories')
+                        help='JSON string describing the layers to be plotted')
+    parser.add_argument('--mds-type', type=str, default='joint_structure', choices=['single', 'multiple', 'joint_structure'],
+                        help='Type of MDS plotting: "single" for a shared MDS space, "multiple" for separate MDS per layer, "joint_structure" for all in one 3D plot.')
+    parser.add_argument('--plot-dim', type=int, default=3, choices=[2, 3],
+                        help='Dimension of the MDS plot (2 or 3)')
     args = parser.parse_args('')
 
     use_cuda = torch.cuda.is_available()
@@ -80,108 +79,33 @@ def set_seed(seed):
 
 def main():
     args = build_args()
-    path = args.model_path
-    layer_categories = args.layer_categories
-    # train_loader, test_loader = kasper_loaders(args)
-    train_loader, test_loader = amir_loaders(args)
-
-    path_model_folder = Path("./blt_local_cache/")
-
-    model_paths = sorted(
-        (subdir / "blt_full_objects.pt")
-        for subdir in path_model_folder.iterdir()
-        if subdir.is_dir() and (subdir / "blt_full_objects.pt").is_file()
-    )
-
-    imgs, labels = sample_images(test_loader, n=50)
-
-    for path in model_paths:
-        model_name = "_".join(path.parts[-2].split("_")[:2])
-        print(f"Processing: {model_name}")
-        model_recurrent, gap, _ = load_model_path(path, print_model=True)
-
-
-    # train_nodes, _ = get_graph_node_names(model_recurrent)
-    # print('The computational steps in the network are: \n', train_nodes)
-
-    # return_layers = ['conv_2', 'conv_2_1', 'conv_2_2', 'conv_2_3', 'conv_2_4', 'conv_2_5', 'conv_2_6', 'conv_2_7', 'conv_2_8', 'conv_2_9']
-    # model_features = extract_features(model_recurrent, imgs.to(args.device), return_layers)
-
-    # rdms, rdms_dict = calc_rdms(model_features)
-    # plot_rdms(rdms_dict)
-    
-        max_steps_to_plot = model_recurrent.times
-
-    # plot_recurrence_grid(
-    #     model_recurrent,
-    #     imgs,
-    #     labels,
-    #     layer_categories,
-    #     steps=model_recurrent.times,
-    #     max_steps=max_steps_to_plot,
-    # )
-
-    # plot_recurrence_grid_joint_embedding(
-    #     args,
-    #     model_recurrent,
-    #     imgs,
-    #     labels,
-    #     layer_categories,
-    #     steps=model_recurrent.times,
-    #     max_steps=max_steps_to_plot,
-    # )
-
-        plot_model_merged_trajectories_1(
-            args,
-            model_name,
-            model_recurrent,
-            imgs,
-            labels
-        )
-
-    # plot_cache_models_joint_embedding(
-    #     args,
-    #     imgs,
-    #     labels,
-    #     layer_categories,
-    #     cache_dir="blt_local_cache",
-    #     max_steps=max_steps_to_plot,
-    # )
-
-    # visualization of model
-    # viz = visualize_blt(model_recurrent)
-    # from IPython.display import display
-
-    # viz = TikzComputationGraphVisualizer(model_recurrent)
-    # display(viz)
-
-def main_single_MDS():
-    args = build_args()
-
     set_seed(args.seed)
 
-    path = args.model_path
-    layer_categories = args.layer_categories
     # train_loader, test_loader = kasper_loaders(args)
-    train_loader, test_loader = amir_loaders(args)
+    _, test_loader = amir_loaders(args)
 
     imgs, labels = sample_images(test_loader, n=50)
 
-    # _, mds, dsim = plot_cache_models_joint_embedding_merged_layers(
-    #     args,
-    #     imgs,
-    #     labels
-    # )
-
-    # plot_shepard_diagram(mds, dsim, save_path=Path.cwd())
-
-    plot_cache_models_joint_embedding_merged_layers_separate_mds(
+    if args.mds_type == 'multiple':
+        plot_rep_traj_separate_mds(
         args,
         imgs,
         labels
-    )
+        )
+    elif args.mds_type == 'joint_structure':
+        plot_joint_3d_interactive(
+            args,
+            imgs,
+            labels
+        )
+    else:
+        plot_rep_traj_single_mds(
+            args,
+            imgs,
+            labels
+        )
+   
 
 
 if __name__ == "__main__":
-
-    main_single_MDS()
+    main()

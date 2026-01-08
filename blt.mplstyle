@@ -1,0 +1,30 @@
+#### Matplotlib Style Sheet for BLT Models ####
+
+# Font setup
+font.family: Arial
+font.size: 12
+
+# Figure setup
+figure.figsize: 8, 6
+figure.facecolor: white
+figure.dpi: 300
+
+# Axes setup (ggplot style)
+axes.facecolor: E5E5E5
+axes.edgecolor: white
+axes.grid: True
+axes.axisbelow: True
+grid.color: white
+axes.labelcolor: 555555
+xtick.color: 555555
+ytick.color: 555555
+axes.titlesize: 12
+axes.labelsize: 10
+
+# Lines and markers
+lines.linewidth: 2
+lines.markersize: 6
+
+# Saving figures
+savefig.bbox: tight
+savefig.facecolor: white

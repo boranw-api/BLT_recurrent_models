@@ -10,8 +10,6 @@ This repository contains training code, recurrent model definitions, and analysi
 * Supports multi-GPU distributed training with mixed objectives (classification vs. contrastive).
 * Provides notebooks and analysis scripts for representational similarity analysis (RSA), feature visualization, and temporal tuning studies.
 
-If you are stepping into the project for the first time, start with the quick-start section below and then skim the file guide to understand where to look for training, modeling, or analysis logic.
-
 ## Quick start
 
 ### Create an environment
@@ -128,10 +126,6 @@ BLT_recurrent_models/
 * `ResNet.py` – Thin wrapper exposing a ResNet baseline aligned with the rest of the training pipeline.
 * `__init__.py` – Enables `models` to be imported as a Python package.
 
-### Figures package (`figures/`)
-
-* `__init__.py` – Namespace placeholder for figure-generation utilities (future-ready for scripted figure exports).
-
 ## Research workflow tips
 
 1. **Configure data paths:** Update `--data_path` to point to ImageNet or VGGFace2 directories. For hybrid datasets, the loaders expect both datasets to exist under the same root.
@@ -143,6 +137,35 @@ BLT_recurrent_models/
 
 * CCN 2024 poster: <https://drive.google.com/file/d/1VUVOf9AJIQbDwfZTyAOccBW8jXGQV_xv/view?usp=sharing>
 * Conference paper: <https://2024.ccneuro.org/pdf/505_Paper_authored_CCN_2024_final_with_authors.pdf>
+
+## 01.07.2026 Updates 
+
+### Visualization & Styling
+Added `blt.mplstyle` for consistent Matplotlib styling.
+
+### Plotting Functionality (`geometry_path.py`)
+- **3D MDS Support**: 
+  - Upgraded `plot_rep_traj_single_mds` and `plot_rep_traj_separate_mds` to support 3D plotting.
+  - Added logic to handle 2D vs 3D axis text positioning (`ax.text` vs `ax.text2D`).
+- **Joint 3D Structure**:
+  - Implemented `plot_joint_3d_interactive`.
+  - Visualizes the entire model trajectory (all layers, all time steps) in a single 3D MDS space.
+  - Connects layers sequentially (end of Layer N -> start of Layer N+1) to show the full processing path.
+  - **Interactive Output**: Generates interactive HTML plots using Plotly in addition to static PNGs.
+- **Shepard Diagrams**:
+  - Combine plotting logic into a single `plot_shepard_diagram` function jointly called.
+  - Integrated plot generation into all trajectory plotting functions.
+  - Removed eigenvalues.
+
+### CLI & Usage (`rnn_test.py`)
+- **New Arguments**:
+  - `--plot-dim`: Choose between `2` or `3` dimensions for MDS (default: 3).
+  - `--mds-type`: Extended choices to include `joint_structure` for the new interactive global plot.
+- **Output Organization**:
+  - Results are now automatically saved to `results/2D`, `results/3D`, or `results/3D_structure` based on configuration.
+  
+### TODO
+File structure section and the whole README needs further update. 
 
 ## License
 

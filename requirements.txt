@@ -57,6 +57,7 @@ pydantic==2.12.3
 pydantic_core==2.41.4
 Pygments
 PyMuPDF==1.26.5
+plotly
 pyparsing==3.2.5
 python-dateutil
 pytikz @ git+https://github.com/allefeld/pytikz.git@5d56d61f29d5ee0f7ea861a2836b4c222ff0fc54
