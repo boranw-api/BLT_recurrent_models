@@ -634,8 +634,9 @@ def plot_rep_traj_single_mds(
     figsize_per_panel=4.0,
 ):
     """
-    Generates a 1xN subplot figure (default N=6) where each subplot visualizes
-    a single layer's trajectory across recurrent steps in a shared MDS space.
+    Generates a combined single-figure trajectory plot where each layer is
+    shown in a distinct color and time evolution is indicated by hollow-to-solid dots.
+    When plot_dim == 3, also saves multiple 2D snapshot views for appendix-style panels.
     """
     cache_root = Path(cache_dir)
     model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
@@ -743,6 +744,11 @@ def plot_rep_traj_single_mds(
     axis_min = center - half_span * 1.4
     axis_max = center + half_span * 1.4
 
+    snapshot_views = int(getattr(args, "single_mds_snapshot_views", 4))
+    snapshot_elev = float(getattr(args, "single_mds_snapshot_elev", 20.0))
+    snapshot_azim_start = float(getattr(args, "single_mds_snapshot_azim_start", 0.0))
+    snapshot_azim_step = float(getattr(args, "single_mds_snapshot_azim_step", 90.0))
+
     for model_path in model_files:
         model_name = model_path.parent.name
         model_name = "_".join(model_name.split("_")[:2])
@@ -750,106 +756,101 @@ def plot_rep_traj_single_mds(
             continue  # Skip models that do not contain "vggface" or contain "imagenet" in their name
         layer_order = model_layer_maps[model_name]["layer_order"]
         prefixed_layer_keys = model_layer_maps[model_name]["prefixed_layer_keys"]
+        layer_cmap = plt.get_cmap("tab10")
+        layer_colors = {
+            layer_name: layer_cmap(idx % 10)
+            for idx, layer_name in enumerate(layer_order)
+        }
 
-        num_layers = len(layer_order)
-        rows = 2
-        cols = 3
-        fig, axes = plt.subplots(
-            rows,
-            cols,
-            figsize=(figsize_per_panel * cols, figsize_per_panel * rows * 1.2),
-            squeeze=False,
-            subplot_kw={'projection': '3d'} if plot_dim == 3 else None,
-        )
+        fig = plt.figure(figsize=(8.5, 7.5))
+        if plot_dim == 3:
+            ax = fig.add_subplot(111, projection="3d")
+        else:
+            ax = fig.add_subplot(111)
 
-        for idx, layer_name in enumerate(layer_order):
-            ax = axes[idx // cols, idx % cols]
+        for layer_name in layer_order:
             prefixed_keys = prefixed_layer_keys.get(layer_name, [])
             coords = [coord_map[k] for k in prefixed_keys if k in coord_map]
             if not coords:
-                ax.axis("off")
-                ax.set_title(f"{layer_name}\n(no activations)")
                 continue
-
             coords = np.vstack(coords)
             num_steps = len(coords)
-            cmap = plt.get_cmap("viridis_r")
-            colors = cmap(np.linspace(0, 1, num_steps))
+            color = layer_colors[layer_name]
 
             if plot_dim == 3:
-                for step_idx in range(num_steps - 1):
-                    ax.plot(
-                        coords[step_idx:step_idx + 2, 0],
-                        coords[step_idx:step_idx + 2, 1],
-                        coords[step_idx:step_idx + 2, 2],
-                        color=colors[step_idx],
-                        linewidth=2,
+                ax.plot(
+                    coords[:, 0],
+                    coords[:, 1],
+                    coords[:, 2],
+                    color=color,
+                    linewidth=1.5,
+                    alpha=0.6,
+                )
+                for step_idx in range(num_steps):
+                    alpha = step_idx / (num_steps - 1) if num_steps > 1 else 1.0
+                    face_color = (*color[:3], alpha)
+                    ax.scatter(
+                        coords[step_idx, 0],
+                        coords[step_idx, 1],
+                        coords[step_idx, 2],
+                        s=36,
+                        facecolors=[face_color],
+                        edgecolors=[color],
+                        linewidths=1.2,
                     )
-                ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c=colors, s=30, edgecolors="none")
-                ax.plot(coords[0, 0], coords[0, 1], coords[0, 2], color="k", marker="s", markersize=5)
-                ax.set_zlim([axis_min, axis_max])
-                if idx == 0:
-                    ax.set_zlabel("dim 3")
             else:
-                for step_idx in range(num_steps - 1):
-                    ax.plot(
-                        coords[step_idx:step_idx + 2, 0],
-                        coords[step_idx:step_idx + 2, 1],
-                        color=colors[step_idx],
-                        linewidth=2,
+                ax.plot(
+                    coords[:, 0],
+                    coords[:, 1],
+                    color=color,
+                    linewidth=1.5,
+                    alpha=0.6,
+                )
+                for step_idx in range(num_steps):
+                    alpha = step_idx / (num_steps - 1) if num_steps > 1 else 1.0
+                    face_color = (*color[:3], alpha)
+                    ax.scatter(
+                        coords[step_idx, 0],
+                        coords[step_idx, 1],
+                        s=36,
+                        facecolors=[face_color],
+                        edgecolors=[color],
+                        linewidths=1.2,
                     )
-                ax.scatter(coords[:, 0], coords[:, 1], c=colors, s=30, edgecolors="none")
-                ax.plot(coords[0, 0], coords[0, 1], color="k", marker="s", markersize=5)
 
-            ax.set_xlim([axis_min, axis_max])
-            ax.set_ylim([axis_min, axis_max])
-            ax.set_title(layer_name)
-            if idx == 0:
-                ax.set_ylabel("dim 2")
-            ax.set_xlabel("dim 1")
+        ax.set_xlim([axis_min, axis_max])
+        ax.set_ylim([axis_min, axis_max])
+        if plot_dim == 3:
+            ax.set_zlim([axis_min, axis_max])
+            ax.set_zlabel("dim 3")
 
-            # Remove grayish grid background
-            for spine in ax.spines.values():
-                spine.set_color('black')
-            ax.set_facecolor('white')
-            ax.grid(False)
+        ax.set_xlabel("dim 1")
+        ax.set_ylabel("dim 2")
 
-            # distance plotting
-            # Total path length: The sum of Euclidean distances between consecutive points in the MDS space. This measures the overall amount of movement along the trajectory.
+        for spine in ax.spines.values():
+            spine.set_color("black")
+        ax.set_facecolor("white")
+        ax.grid(False)
 
-            # Average step length: The total path length divided by the number of steps (num_steps - 1). This normalizes the metric by the number of transitions, allowing comparison across layers with different numbers of dots.
-            distances = np.linalg.norm(coords[1:] - coords[:-1], axis=1)
-            total_path_length = np.sum(distances)
-            avg_step_length = total_path_length / (num_steps - 1)
-            
-            # Add metrics as text on the subplot
-            text_str = f'Total: {total_path_length:.2f}\nAvg: {avg_step_length:.2f}'
-            text_kwargs = dict(transform=ax.transAxes, fontsize=8, verticalalignment='top', 
-                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-            if plot_dim == 3:
-                ax.text2D(0.05, 0.95, text_str, **text_kwargs)
-            else:
-                ax.text(0.05, 0.95, text_str, **text_kwargs)
+        ax.set_title(f"Representational Trajectories - {model_name}")
+        if layer_order:
+            ax.legend(layer_order, loc="upper right", fontsize=8, frameon=False)
 
-        colorbar_width = 2.5 / num_layers
-        colorbar_left = (1.0 - colorbar_width) / 2.0
-        cbar_ax = fig.add_axes([colorbar_left, 0.08, colorbar_width, 0.02])
-        
-        # maybe not normalize, because the number of steps is not fixed.
-        # sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=0, vmax=1))
-        sm = plt.cm.ScalarMappable(cmap='viridis_r')
-        cbar = fig.colorbar(sm, cax=cbar_ax, orientation='horizontal')
-        cbar.set_label('Timestep')
-        cbar.set_ticks([0, 0.5, 1])
-        cbar.set_ticklabels(['early', 'mid', 'late'])
-
-        fig.suptitle(f"Representational Trajectories - {model_name}", y=1.02)
-        fig.tight_layout(rect=[0, 0.15, 1, 1])
-
-        save_path = results_dir / f"rep_geo_single_mds_{model_name}_2x3.png"
+        fig.tight_layout()
+        save_path = results_dir / f"rep_geo_single_mds_{model_name}_combined.png"
         fig.savefig(save_path, bbox_inches="tight")
         output_paths.append(str(save_path))
-        
+
+        if plot_dim == 3 and snapshot_views > 0:
+            for view_idx in range(snapshot_views):
+                azim = snapshot_azim_start + snapshot_azim_step * view_idx
+                ax.view_init(elev=snapshot_elev, azim=azim)
+                snapshot_path = results_dir / (
+                    f"rep_geo_single_mds_{model_name}_view{view_idx + 1}.png"
+                )
+                fig.savefig(snapshot_path, bbox_inches="tight")
+                output_paths.append(str(snapshot_path))
+
         plt.close(fig)
 
     return output_paths, transformer, rdms_comp

@@ -1,8 +1,10 @@
 import matplotlib.pyplot as plt
+import seaborn as sns
 import rsatoolbox
 from rsatoolbox.data import Dataset
 from rsatoolbox.rdm.calc import calc_rdm
 from scipy import stats
+from scipy import linalg
 from sklearn import manifold
 from sklearn.decomposition import PCA
 import matplotlib as mpl
@@ -24,6 +26,7 @@ import csv
 import torchvision
 
 from argparse import Namespace
+from dsa_standard import DSA
 
 def load_vggface2():
 
@@ -460,8 +463,176 @@ def plot_rdm_mds(model, imgs, labels, layers, rdm_method='euclidean', num_steps=
                 fig.savefig(f'{save_path}.{format}', format=format, dpi=300, bbox_inches='tight')
 
 from models.build_model import build_model
-from scipy import stats
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _stack_trajectory(trajectory, device=None):
+    """
+    Convert a list of tensors [T x (B,C,H,W)] or a tensor into
+    a (T, B, F) torch tensor with flattened spatial dimensions.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if isinstance(trajectory, torch.Tensor):
+        traj = trajectory
+    else:
+        traj = torch.stack([torch.as_tensor(step) for step in trajectory], dim=0)
+
+    traj = traj.to(device)
+    if traj.dim() < 3:
+        raise ValueError("Trajectory tensor must have at least 3 dims (T,B,features...)" )
+
+    t, b = traj.shape[0], traj.shape[1]
+    traj = traj.reshape(t, b, -1)
+    return traj
+
+
+def _apply_pca_to_trajectory(traj, n_components=80, random_state=0):
+    """
+    Apply PCA on flattened (T*B, F) trajectory features and return reduced trajectory.
+    """
+    if n_components is None:
+        return traj, None
+
+    t, b, f = traj.shape
+    if isinstance(n_components, float) and 0 < n_components < 1:
+        pca = PCA(n_components=n_components, random_state=random_state)
+    else:
+        n_components = min(int(n_components), f)
+        if n_components >= f:
+            return traj, None
+        pca = PCA(n_components=n_components, random_state=random_state)
+
+    flat = traj.detach().cpu().numpy().reshape(t * b, f)
+    flat_reduced = pca.fit_transform(flat)
+    reduced = torch.from_numpy(flat_reduced).to(traj.device).reshape(t, b, n_components)
+    return reduced, pca
+
+
+def perform_dsa_analysis(
+    trajectories,
+    pca_components=80,
+    device=None,
+    plot=True,
+    save_path=None,
+    title="DSA similarity",
+    cmap="magma",
+    n_delays=1,
+    delay_interval=1,
+    score_method="angular",
+    plot_similarity=True,
+    rank=None,
+    rank_explained_variance=None,
+    rank_thresh=None,
+    validate_fit=False,
+    fit_error_threshold=0.2,
+    fit_metric="nrmse",
+):
+    """
+    Perform Dynamical Similarity Analysis (DSA) on recurrent trajectories.
+
+    Args:
+        trajectories (dict): Mapping name -> trajectory (list of tensors or Tensor).
+        pca_components (int|float): PCA components to keep, or float in (0,1) for variance explained.
+        batch_mode (str): "concat" or "average" to handle batch dimension.
+        device (torch.device): Optional device for computation.
+        plot (bool): Whether to plot a heatmap of similarities.
+        save_path (str): Optional path to save the heatmap.
+        title (str): Title for the heatmap.
+        cmap (str): Matplotlib colormap.
+        rank/rank_explained_variance/rank_thresh: Low-rank control for HAVOK DMD. Strongly recommended to set.
+        validate_fit (bool): Whether to report fit quality for each DMD.
+        fit_metric (str): One of {"nrmse", "r2", "vaf"} for fit quality reporting.
+
+    Returns:
+        sim_matrix (np.ndarray): Similarity matrix (or raw DSA score if plot_similarity=False).
+        dynamics_mats (OrderedDict): Mapping name -> dynamics matrix A.
+        pca_models (OrderedDict): Mapping name -> PCA model (or None).
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    dynamics_mats = OrderedDict()
+    pca_models = OrderedDict()
+
+    for name, traj in trajectories.items():
+        traj_tensor = _stack_trajectory(traj, device=device)
+        traj_reduced, pca_model = _apply_pca_to_trajectory(
+            traj_tensor, n_components=pca_components
+        )
+        pca_models[name] = pca_model
+        trials_first = traj_reduced.permute(1, 0, 2).detach().cpu().numpy()
+        dynamics_mats[name] = trials_first
+
+    keys = list(dynamics_mats.keys())
+    n = len(keys)
+
+    if n == 0:
+        return np.zeros((0, 0)), dynamics_mats, pca_models
+
+    models = [dynamics_mats[k] for k in keys]
+    if rank is None and rank_explained_variance is None and rank_thresh is None:
+        print(
+            "[DSA] Warning: rank not set. For Hankel-embedded data, consider setting rank or rank_explained_variance to avoid overfitting."
+        )
+    dsa = DSA(
+        models,
+        n_delays=n_delays,
+        delay_interval=delay_interval,
+        score_method=score_method,
+        rank=rank,
+        rank_explained_variance=rank_explained_variance,
+        rank_thresh=rank_thresh,
+    )
+    sim_matrix = dsa.fit_score()
+
+    if validate_fit:
+        fit_errors = OrderedDict()
+        for idx, dmd in enumerate(dsa.dmds[0]):
+            v_minus = dmd.Vt_minus
+            v_plus = dmd.Vt_plus
+            if v_minus is None or v_plus is None:
+                continue
+            pred = v_minus @ dmd.A_v
+            if fit_metric == "r2":
+                ss_res = torch.sum((v_plus - pred) ** 2)
+                ss_tot = torch.sum((v_plus - torch.mean(v_plus, dim=0, keepdim=True)) ** 2) + 1e-8
+                r2 = 1.0 - (ss_res / ss_tot)
+                err = 1.0 - r2
+            elif fit_metric == "vaf":
+                ss_res = torch.sum((v_plus - pred) ** 2)
+                ss_tot = torch.sum((v_plus - torch.mean(v_plus, dim=0, keepdim=True)) ** 2) + 1e-8
+                vaf = 1.0 - (ss_res / ss_tot)
+                err = 1.0 - vaf
+            else:
+                err = torch.norm(v_plus - pred) / (torch.norm(v_plus) + 1e-8)
+            fit_errors[keys[idx]] = err.item()
+        if fit_errors:
+            high = {k: v for k, v in fit_errors.items() if v > fit_error_threshold}
+            if high:
+                print(
+                    f"[DSA] Warning: high fit error (> {fit_error_threshold}) for {list(high.keys())}: {high}"
+                )
+
+    if plot_similarity and score_method == "angular":
+        sim_plot = 1.0 - (np.array(sim_matrix) / np.pi)
+    else:
+        sim_plot = np.array(sim_matrix)
+
+    if plot:
+        fig, ax = plt.subplots(figsize=(1.2 * n, 1.0 * n))
+        sns.heatmap(sim_plot, xticklabels=keys, yticklabels=keys, cmap=cmap, ax=ax)
+        ax.set_title(title)
+        cbar = ax.collections[0].colorbar
+        cbar.ax.set_ylabel("DSA Similarity" if plot_similarity else "DSA Score")
+        fig.tight_layout()
+        if save_path is not None:
+            fig.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+
+    return sim_plot, dynamics_mats, pca_models
 
 def calc_dprime_from_dataset(model, output_layer='output_5', threshold = 0.2, dataset_name='FBO', num_model_steps=5):
 
