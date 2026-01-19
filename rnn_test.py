@@ -13,8 +13,9 @@ from geometry_path import (
     amir_loaders,
     plot_rep_traj_single_mds,
     plot_rep_traj_separate_mds,
-    plot_joint_3d_interactive,
+    plot_joint_structure,
     extract_recurrent_steps,
+    plot_rdm_per_timestep,
 )
 from analyze_representations import load_model_path, perform_dsa_analysis
 
@@ -72,7 +73,7 @@ def build_args():
                         help='Starting azimuth angle for 3D snapshot views.')
     parser.add_argument('--single-mds-snapshot-azim-step', type=float, default=90.0,
                         help='Azimuth step between successive 3D snapshot views.')
-    parser.add_argument('--skip-dsa', action='store_true', default=False,
+    parser.add_argument('--skip-dsa', action='store_true', default=True,
                         help='Disable DSA analysis when running the script.')
     parser.add_argument('--dsa-pca-components', type=float, default=80,
                         help='PCA components for DSA trajectories (int) or variance explained (0-1).')
@@ -99,9 +100,16 @@ def build_args():
                         help='Optional path for the DSA heatmap.')
     parser.add_argument('--dsa-cmap', type=str, default='viridis',
                         help='Colormap for DSA heatmap.')
-    args = parser.parse_args('')
+    parser.add_argument('--threads', type=int, default=6,
+                        help='Number of threads for PyTorch CPU operations (default: None, uses PyTorch default)')
+    parser.add_argument('--plot-rdm-timesteps', action='store_true', default=False,
+                        help='Plot RDMs per timestep.')
+    parser.add_argument('--split-by-label', action='store_true', default=False,
+                        help='Split joint structure trajectories by input label (e.g. faces vs objects).')
+    args = parser.parse_args()
 
-    use_cuda = torch.cuda.is_available()
+    use_cuda = not args.no_cuda and torch.cuda.is_available()
+    # use_cuda = False
 
     if use_cuda:
         device = torch.device("cuda")
@@ -187,6 +195,8 @@ def set_seed(seed):
 
 def main():
     args = build_args()
+    if args.threads is not None:
+        torch.set_num_threads(args.threads)
     set_seed(args.seed)
 
     # train_loader, test_loader = kasper_loaders(args)
@@ -197,6 +207,9 @@ def main():
     if not args.skip_dsa:
         run_dsa(args, imgs, labels)
 
+    if args.plot_rdm_timesteps:
+        plot_rdm_per_timestep(args, imgs, labels)
+
     if args.mds_type == 'multiple':
         plot_rep_traj_separate_mds(
         args,
@@ -204,10 +217,11 @@ def main():
         labels
         )
     elif args.mds_type == 'joint_structure':
-        plot_joint_3d_interactive(
+        plot_joint_structure(
             args,
             imgs,
-            labels
+            labels,
+            split_by_label=args.split_by_label
         )
     else:
         plot_rep_traj_single_mds(

@@ -1,172 +1,110 @@
-# BLT Recurrent Models
+# BLT Recurrent Models: Analysis & Visualization
 
-> Code accompanying the CCN 2024 submission “Recurrent models optimized for face recognition exhibit representational dynamics resembling the primate brain.”
+This repository contains the analysis and visualization suite for the BLT (Bottom-up, Lateral, Top-down) family of face-recognition networks. It focuses on characterizing the representational dynamics of recurrent models and comparing them to primate inferior temporal (IT) cortex.
 
-## Overview
+**Note:** The original model training code (`main.py`) has been moved to the `archive/` directory. The root directory is now streamlined for analyzing pre-trained models.
 
-This repository contains training code, recurrent model definitions, and analysis utilities for the BLT (Bottom-up, Lateral, Top-down) family of face-recognition networks. The codebase is organized around reproducible PyTorch experiments that compare model dynamics to primate inferior temporal (IT) cortex responses.
+## Installation
 
-* Implements a configurable suite of BLT recurrent convolutional networks alongside CORnet and ResNet baselines.
-* Supports multi-GPU distributed training with mixed objectives (classification vs. contrastive).
-* Provides notebooks and analysis scripts for representational similarity analysis (RSA), feature visualization, and temporal tuning studies.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-lab/BLT_recurrent_models.git
+    cd BLT_recurrent_models
+    ```
 
-## Quick start
+2.  **Install dependencies:**
+    It is recommended to use a virtual environment.
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    ```
+    *Note: The `requirements.txt` includes a git dependency for `pytikz`.*
 
-### Create an environment
+## Usage
 
+The primary entry point for analysis is `rnn_test.py`. This script supports various analyses including Representational Dissimilarity Matrices (RDMs), Multi-Dimensional Scaling (MDS) trajectories, and Dynamic Stability Analysis (DSA).
+
+### 1. Representational Trajectories (MDS)
+
+Visualize how the model's representations evolve over recurrent time steps.
+
+**Single MDS Space (Shared):**
+Project all layers and time steps into a common low-dimensional space to compare them directly.
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install tqdm pandas pillow matplotlib scikit-learn rsatoolbox antialiased-cnns wandb
+python rnn_test.py \
+    --model-path "path/to/model.pt" \
+    --mds-type single \
+    --plot-dim 3
 ```
 
-> **Note:** `analyze_representations.py` additionally depends on `repsim` (for Angular CKA metrics) and other scientific Python packages. Install them as needed for your analysis workflow.
-
-### Train a model
-
+**Separate MDS Spaces:**
+Visualize the trajectory of each layer in its own independent MDS space.
 ```bash
-python main.py \
-	--model blt_bl \
-	--dataset imagenet \
-	--data_path /path/to/imagenet \
-	--output_path ./results/ \
-	--epochs 90 \
-	--batch_size 64 \
-	--distributed 1
+python rnn_test.py \
+    --model-path "path/to/model.pt" \
+    --mds-type multiple
 ```
 
-Key flags:
+**Joint Structure (Interactive 3D):**
+Visualize the entire model hierarchy as a unified 3D structure, connecting layers sequentially.
+```bash
+python rnn_test.py \
+    --model-path "path/to/model.pt" \
+    --mds-type joint_structure \
+    --split-by-label  # Optional: visualize separate trajectories for different classes
+```
+*   **[Read more about Joint Structure Plotting](readmes/joint_structure.md)**
 
-* `--model` switches among BLT variants as well as CORnet and ResNet baselines.
-* `--pool` selects the pooling operator used in recurrent blocks (`max`, `average`, or `blur`).
-* `--objective` chooses between standard classification and contrastive setups.
-* `--data_path` must point to an ImageNet- or VGGFace2-style directory tree.
+### 2. Dynamic Stability Analysis (DSA)
 
-The script auto-detects the number of GPUs and launches distributed data-parallel training. To run on a single device, pass `--distributed 0`.
-
-### Resume or evaluate
+Analyze the dynamical stability of the recurrent representations using Hankel matrices and DMD-like techniques.
 
 ```bash
-python main.py --resume path/to/checkpoint.pth --evaluate --distributed 0
+python rnn_test.py \
+    --model-path "path/to/model.pt" \
+    --dsa-save-path ./results/dsa_analysis.png \
+    --dsa-n-delays 3
 ```
+*   **[Read more about DSA](readmes/DSA.md)**
 
-Running with `--evaluate` skips further optimization and reports validation accuracy and loss. Set `--save_model 1` during training to persist the best-performing checkpoint under `output_path`.
+### 3. RDM Analysis
 
-## Directory layout 🗂️
+Compute and plot RDMs to quantify representational geometry.
+```bash
+python rnn_test.py --plot-rdm-timesteps
+```
+*   **[Read more about RDM of RDMs](readmes/rdm_of_rdm.md)**
+
+## Directory Layout
 
 ```text
 BLT_recurrent_models/
-├── .gitignore
-├── LICENSE
-├── README.md
-├── IT_response.png
-├── analyze_representations.py
-├── blt_tuning_dynamics.ipynb
-├── engine.py
-├── face_patch_tuning.ipynb
-├── fast_models.ipynb
-├── main.py
-├── run_model.ipynb
-├── tikz_visualizer.py
-├── tuning_dynamics.ipynb
-├── tuning_dynamics_second_version.ipynb
-├── utils.py
-├── visualize_model.ipynb
-├── datasets/
-│   ├── __init__.py
-│   ├── datasets.py
-│   ├── vggface2.py
-│   └── vggface2_old.py
-├── figures/
-│   └── __init__.py
-└── models/
-		├── __init__.py
-		├── activations.py
-		├── blt.py
-		├── build_model.py
-		├── cornet.py
-		└── ResNet.py
+├── archive/                  # Archived training code (main.py, utils.py) and old notebooks
+├── blt_local_cache/          # Default storage for downloaded datasets/models
+├── datasets/                 # Dataset loaders (VGGFace2, etc.)
+├── models/                   # Model definitions (BLT, CORnet, etc.)
+├── readmes/                  # Detailed method documentation
+├── results/                  # Generated plots and analysis outputs
+├── analyze_representations.py # Core analysis logic (RSA, CKA)
+├── dsa_standard.py           # Dynamic Stability Analysis implementation
+├── engine.py                 # (Legacy) Training engine components
+├── geometry_path.py          # Plotting and geometry analysis plotting functions
+└── rnn_test.py               # Main CLI for running analyses
 ```
 
-## File-by-file guide
+## Historic / Training Code
 
-### Root scripts and assets
+The training components (`main.py`, `utils.py`, `blt_tuning_dynamics.ipynb`, etc.) have been moved to the `archive/` folder to clean up the workspace.
+To train a new model, you may need to restore these files to the root or adjust imports to reference them from `archive/`.
 
-* `.gitignore` – Standard Git exclusions for checkpoints, logs, and Python artifacts.
-* `main.py` – Entry point for training and evaluation. Parses all CLI arguments, spawns distributed workers, builds models, and coordinates optimization.
-* `engine.py` – Houses the core training loop (`train_one_epoch`) and validation routine (`evaluate`) used by `main.py`.
-* `utils.py` – Utility helpers for distributed setup, metric logging, tensor collation, and general PyTorch niceties (adapted from torchvision references).
-* `analyze_representations.py` – Toolkit for representational similarity analyses (RSA, Angular CKA) and dataset sampling utilities for evaluation studies.
-* `tikz_visualizer.py` – Generates TikZ diagrams describing BLT connectivity graphs for publication-quality figures.
-* `IT_response.png` – Reference figure illustrating inferior temporal cortex response dynamics used in documentation and presentations.
+**Original Training Example:**
+```bash
+# (Requires main.py in root)
+python main.py --model blt_bl --dataset imagenet --epochs 90
+```
 
-### Experiment notebooks
-
-* `blt_tuning_dynamics.ipynb` – Investigates how recurrent steps shape BLT unit tuning curves.
-* `tuning_dynamics.ipynb` & `tuning_dynamics_second_version.ipynb` – Alternative explorations of temporal dynamics across BLT variants.
-* `face_patch_tuning.ipynb` – Focused analysis on face-selective patches and their response characteristics.
-* `fast_models.ipynb` – Prototyping notebook for building and benchmarking lightweight recurrent configurations.
-* `run_model.ipynb` – Interactive playground for loading checkpoints, running inference, and inspecting outputs.
-* `visualize_model.ipynb` – Demonstrates how to hook layers, capture activations, and visualize network pathways.
-
-### Datasets package (`datasets/`)
-
-* `datasets.py` – Factory for fetching ImageNet, VGGFace2, hybrid (ImageNet + VGGFace2), and specialized evaluation splits. Handles distributed samplers and augmentation pipelines.
-* `vggface2.py` – Modern PyTorch dataset wrapper for VGGFace2 with identity remapping, cropping, and optional class subset selection.
-* `vggface2_old.py` – Legacy loader retained for reproducibility with earlier experiments.
-* `__init__.py` – Exposes dataset constructors when importing the package.
-
-### Models package (`models/`)
-
-* `build_model.py` – Central dispatcher that instantiates BLT, CORnet, or ResNet architectures based on CLI flags.
-* `blt.py` – Definition of the BLT recurrent network, including configurable bottom-up, lateral, and top-down connections plus pooling choices.
-* `activations.py` – Convenience functions (e.g., `get_activations_batch`) for capturing intermediate features used in analyses.
-* `cornet.py` – Implementations of CORnet baselines (Z/S/R/RT variants) for comparison to BLT models.
-* `ResNet.py` – Thin wrapper exposing a ResNet baseline aligned with the rest of the training pipeline.
-* `__init__.py` – Enables `models` to be imported as a Python package.
-
-## Research workflow tips
-
-1. **Configure data paths:** Update `--data_path` to point to ImageNet or VGGFace2 directories. For hybrid datasets, the loaders expect both datasets to exist under the same root.
-2. **Monitor training:** Enable Weights & Biases logging with `--wandb_p project_name` to stream metrics online (`WANDB_MODE` toggles automatically).
-3. **Probe representations:** Use `analyze_representations.py` or the notebooks to compute RSA/CKA against neural data and visualize temporal dynamics.
-4. **Visualize connectivity:** Run `tikz_visualizer.py` from a notebook to export TikZ diagrams that document the learned recurrent graph.
-
-## Additional resources
-
-* CCN 2024 poster: <https://drive.google.com/file/d/1VUVOf9AJIQbDwfZTyAOccBW8jXGQV_xv/view?usp=sharing>
-* Conference paper: <https://2024.ccneuro.org/pdf/505_Paper_authored_CCN_2024_final_with_authors.pdf>
-
-## 01.07.2026 Updates 
-
-### Visualization & Styling
-Added `blt.mplstyle` for consistent Matplotlib styling.
-
-### Plotting Functionality (`geometry_path.py`)
-- **3D MDS Support**: 
-  - Upgraded `plot_rep_traj_single_mds` and `plot_rep_traj_separate_mds` to support 3D plotting.
-  - Added logic to handle 2D vs 3D axis text positioning (`ax.text` vs `ax.text2D`).
-- **Joint 3D Structure**:
-  - Implemented `plot_joint_3d_interactive`.
-  - Visualizes the entire model trajectory (all layers, all time steps) in a single 3D MDS space.
-  - Connects layers sequentially (end of Layer N -> start of Layer N+1) to show the full processing path.
-  - **Interactive Output**: Generates interactive HTML plots using Plotly in addition to static PNGs.
-- **Shepard Diagrams**:
-  - Combine plotting logic into a single `plot_shepard_diagram` function jointly called.
-  - Integrated plot generation into all trajectory plotting functions.
-  - Removed eigenvalues.
-
-### CLI & Usage (`rnn_test.py`)
-- **New Arguments**:
-  - `--plot-dim`: Choose between `2` or `3` dimensions for MDS (default: 3).
-  - `--mds-type`: Extended choices to include `joint_structure` for the new interactive global plot.
-- **Output Organization**:
-  - Results are now automatically saved to `results/2D`, `results/3D`, or `results/3D_structure` based on configuration.
-  
-### TODO
-File structure section and the whole README needs further update. 
-
-## License
-
-This work is distributed under the terms of the [GNU General Public License v3.0](LICENSE).
+More often used command:
+```bash
+/home/savannah/anaconda3/envs/blt/bin/python rnn_test.py --plot-rdm-timesteps --skip-dsa --test-batch-size 10 --batch-size 10
+```
