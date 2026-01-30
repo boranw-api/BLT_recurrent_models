@@ -106,6 +106,9 @@ def build_args():
                         help='Plot RDMs per timestep.')
     parser.add_argument('--split-by-label', action='store_true', default=False,
                         help='Split joint structure trajectories by input label (e.g. faces vs objects).')
+    parser.add_argument('--rdm-cmap', type=str, default='Blues',
+                        choices=['Blues', 'magma', 'viridis'],
+                        help='Colormap for RDM plots (Blues, magma, or viridis).')
     args = parser.parse_args()
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
@@ -208,7 +211,7 @@ def main():
         run_dsa(args, imgs, labels)
 
     if args.plot_rdm_timesteps:
-        plot_rdm_per_timestep(args, imgs, labels)
+        plot_rdm_per_timestep(args, imgs, labels, split_by_label=args.split_by_label, rdm_cmap=args.rdm_cmap)
 
     if args.mds_type == 'multiple':
         plot_rep_traj_separate_mds(

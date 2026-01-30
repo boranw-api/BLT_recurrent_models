@@ -1119,7 +1119,7 @@ def plot_joint_structure(
         if "vggface" not in model_name or "imagenet" in model_name:
             continue
 
-        print(f"Processing (Joint Structure): {model_name}")
+        print(f"Processing (Joint MDS): {model_name}")
         model, _, _ = load_model_path(str(model_path), print_model=False)
         model.to(args.device)
         model.eval()
@@ -1134,149 +1134,241 @@ def plot_joint_structure(
 
         imgs_device = imgs.to(args.device)
         
-        flat_features = OrderedDict()
-        
-        # Determine splitting strategy
-        groups = []
+        # Prepare features logic
         if split_by_label and labels is not None:
+            # SEPARATE MDS PER LABEL logic
             unique_labels = sorted(torch.unique(labels).tolist())
-            # Ensure equal sample sizes for RDM comparison
-            counts = [(labels == lbl).sum().item() for lbl in unique_labels]
-            min_count = min(counts)
-            if min_count < 2:
-                print(f"Warning: Insufficient samples per class for splitting {counts}. Using joint.")
-                groups.append(("", range(len(imgs))))
-            else:
-                for lbl in unique_labels:
-                    # Collect indices for this label, truncated to min_count
-                    idxs = torch.where(labels == lbl)[0][:min_count]
-                    groups.append((f"_lbl{lbl}", idxs))
-        else:
-            groups.append(("", range(len(imgs))))
-
-        for layer_name in layer_list:
-            activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=model_steps)
-            if max_steps is not None:
-                activations = activations[:max_steps]
             
-            for suffix, idxs in groups:
-                 for t_idx, feat in enumerate(activations):
-                    # feat is (Batch, D)
-                    if isinstance(idxs, range):
-                         sub_feat = feat
-                    else:
-                         sub_feat = feat[idxs]
-                    
-                    key = f"{layer_name}{suffix}_t{t_idx}"
-                    flat_features[key] = sub_feat
-
-        if not flat_features:
-            continue
-
-        # Calc RDMs
-        rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
-        
-        # Compare RDMs
-        rdms_comp = rsatoolbox.rdm.compare(rdms_flat, rdms_flat, method=rdm_comp_method)
-        if rdm_comp_method == "cosine":
-            rdms_comp = np.arccos(np.clip(rdms_comp, -1, 1))
-        rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-        rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-
-        # MDS - 2 Components for 2D plot
-        transformer = manifold.MDS(
-            n_components=2,
-            metric=True,
-            max_iter=3000,
-            n_init=30,
-            normalized_stress=True,
-            dissimilarity="precomputed",
-        )
-        dims = transformer.fit_transform(rdms_comp)
-        
-        # Rotate 90 degrees clockwise
-        dims_rot = np.zeros_like(dims)
-        dims_rot[:, 0] = dims[:, 1]
-        dims_rot[:, 1] = -dims[:, 0]
-        dims = dims_rot
-
-        # Map keys to coords
-        keys = list(flat_features.keys())
-        coord_map = {k: dims[i] for i, k in enumerate(keys)}
-
-        # Prepare for plotting
-        num_layers = len(layer_list)
-        cmap = plt.get_cmap("tab10") 
-        layer_base_colors = [cmap(i) for i in range(num_layers)]
-
-        results_dir = Path("results") / "Joint_Structure"
-        results_dir.mkdir(parents=True, exist_ok=True)
-
-        fig, ax = plt.subplots(figsize=(10, 8))
-        
-        # Calculate axis limits
-        all_coords = dims
-        amin, amax = all_coords.min(), all_coords.max()
-        center = (amin + amax) / 2.0
-        half_span = max((amax - amin) / 2.0, 1e-6)
-        axis_min = center - half_span * 1.1
-        axis_max = center + half_span * 1.1
-
-        legend_handles = []
-        legend_labels = []
-
-        # Linestyles for groups: Solid for first (Faces?), Dashed for second (Objects?)
-        linestyles = ['-', '--', ':', '-.']
-
-        for l_idx, layer_name in enumerate(layer_list):
-            base_color = layer_base_colors[l_idx]
+            # Pre-extract all features first (simplest way is to carry full batch then slice)
+            # Actually, extract_recurrent_steps returns list of tensors.
+            # We can re-extract or slice. Slicing is faster.
             
-            # Find all trajectories for this layer
-            # Group keys by suffix (e.g. "_lbl0", "_lbl1", or "")
-            layer_all_keys = [k for k in keys if k.startswith(layer_name) and "_t" in k]
+            # Extract once for all images
+            all_layer_activations = {}
+            for layer_name in layer_list:
+                activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=model_steps)
+                if max_steps is not None:
+                    activations = activations[:max_steps]
+                all_layer_activations[layer_name] = activations
             
-            # Identify unique prefixes to separate trajectories
-            prefixes = set()
-            for k in layer_all_keys:
-                # Key format: {prefix}_t{idx}
-                prefix = k.rsplit('_t', 1)[0]
-                prefixes.add(prefix)
-            
-            sorted_prefixes = sorted(list(prefixes))
-            
-            for p_idx, prefix in enumerate(sorted_prefixes):
-                # Determine style
-                # If we have labels, check suffix
-                # We can determine index in unique groups if we want specific mapping
-                # But simple enumeration of sorted prefixes works if consistent
-                # If only one prefix (no split), use solid.
-                # If split, assumes sorted_prefixes matches sorted labels order
+            # Loop over labels and create a plot for each
+            for lbl in unique_labels:
+                lbl_mask = (labels == lbl).cpu().numpy()
+                lbl_count = np.sum(lbl_mask)
+                if lbl_count < 2:
+                    print(f"Skipping label {lbl}: insufficient samples ({lbl_count})")
+                    continue
                 
-                # Check label id from prefix to be safe?
-                ls = '-'
-                if "_lbl" in prefix:
-                    try:
-                        lbl_num = int(prefix.split("_lbl")[1])
-                        ls = linestyles[lbl_num % len(linestyles)]
-                    except:
-                        ls = linestyles[p_idx % len(linestyles)]
-                else:
-                    ls = '-'
+                print(f"Processing Separate MDS for Label {lbl}...")
+                
+                # Build flat features for this label only
+                flat_features = OrderedDict()
+                for layer_name in layer_list:
+                    act_list = all_layer_activations[layer_name]
+                    for t_idx, feat in enumerate(act_list):
+                        # feat is (Batch, D), slice by mask
+                        sub_feat = feat[lbl_mask]
+                        key = f"{layer_name}_t{t_idx}"
+                        flat_features[key] = sub_feat
 
+                # Calc RDMs
+                rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
+                
+                # Compare
+                rdms_comp = rsatoolbox.rdm.compare(rdms_flat, rdms_flat, method=rdm_comp_method)
+                if rdm_comp_method == "cosine":
+                    rdms_comp = np.arccos(np.clip(rdms_comp, -1, 1))
+                rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
+                rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
+                
+                # MDS
+                transformer = manifold.MDS(
+                    n_components=2,
+                    metric=True,
+                    max_iter=3000,
+                    n_init=30,
+                    normalized_stress=True,
+                    dissimilarity="precomputed",
+                )
+                dims = transformer.fit_transform(rdms_comp)
+                
+                # Rotate
+                dims_rot = np.zeros_like(dims)
+                dims_rot[:, 0] = dims[:, 1]
+                dims_rot[:, 1] = -dims[:, 0]
+                dims = dims_rot
+                
+                # Map
+                keys = list(flat_features.keys())
+                coord_map = {k: dims[i] for i, k in enumerate(keys)}
+                
+                # Plotting Config
+                num_layers = len(layer_list)
+                cmap = plt.get_cmap("tab10") 
+                layer_base_colors = [cmap(i) for i in range(num_layers)]
+
+                results_dir = Path("results") / "Joint_Structure"
+                results_dir.mkdir(parents=True, exist_ok=True)
+
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                all_coords = dims
+                amin, amax = all_coords.min(), all_coords.max()
+                center = (amin + amax) / 2.0
+                half_span = max((amax - amin) / 2.0, 1e-6)
+                axis_min = center - half_span * 1.1
+                axis_max = center + half_span * 1.1
+                
+                legend_handles = []
+                legend_labels = []
+
+                for l_idx, layer_name in enumerate(layer_list):
+                    base_color = layer_base_colors[l_idx]
+                    
+                    # Gather coords
+                    keys_for_layer = [k for k in keys if k.startswith(f"{layer_name}_t")]
+                    keys_for_layer.sort(key=lambda x: int(x.split('_t')[1]))
+                    
+                    layer_coords = []
+                    for key in keys_for_layer:
+                        if key in coord_map:
+                            layer_coords.append(coord_map[key])
+                    
+                    layer_coords = np.array(layer_coords)
+                    n_steps = len(layer_coords)
+                    
+                    if n_steps > 0:
+                        layer_colors_grad = []
+                        for t in range(n_steps):
+                            alpha = 0.2 + 0.8 * (t / (n_steps - 1)) if n_steps > 1 else 1.0
+                            c = list(base_color)
+                            c[3] = alpha 
+                            layer_colors_grad.append(tuple(c))
+                        
+                        if n_steps > 1:
+                            points = layer_coords.reshape(-1, 1, 2)
+                            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+                            seg_colors = layer_colors_grad[:-1]
+                            lc = LineCollection(segments, colors=seg_colors, linewidths=2, alpha=1.0)
+                            ax.add_collection(lc)
+
+                        ax.scatter(layer_coords[:, 0], layer_coords[:, 1], c=layer_colors_grad, s=40, edgecolors='none', zorder=10)
+                        
+                        # Legend Entry
+                        from matplotlib.lines import Line2D
+                        handle = Line2D([0], [0], marker='o', color='w', label=layer_name,
+                                        markerfacecolor=base_color, markersize=15, linestyle='None')
+                        legend_handles.append(handle)
+                        legend_labels.append(layer_name)
+
+                ax.set_xlim([axis_min, axis_max])
+                ax.set_ylim([axis_min, axis_max])
+                ax.set_aspect('equal')
+                ax.set_xlabel("MDS Dim 1")
+                ax.set_ylabel("MDS Dim 2")
+                label_str = "face only" if lbl == 0 else "object only" if lbl == 1 else f"Label {lbl}"
+                ax.set_title(f"Joint MDS: {model_name} ({label_str})")
+                
+                legend = ax.legend(handles=legend_handles, labels=legend_labels, 
+                                   loc='center left', bbox_to_anchor=(1, 0.5), 
+                                   frameon=True, fontsize=14)
+                legend.get_frame().set_facecolor('#e0e0e0')
+                legend.get_frame().set_edgecolor('none')
+                
+                for spine in ax.spines.values():
+                    spine.set_color("black")
+                ax.set_facecolor("white")
+                ax.grid(True, linestyle='--', alpha=0.5)
+
+                save_path = results_dir / f"joint_structure_{model_name}_label_{lbl}.png"
+                fig.savefig(save_path, bbox_inches="tight", dpi=300)
+                plt.close(fig)
+                output_paths.append(str(save_path))
+            
+            return output_paths
+
+        else: 
+            # Original Logic for Single Joint Plot (or Combined if non-split)
+            flat_features = OrderedDict()
+            for layer_name in layer_list:
+                activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=model_steps)
+                if max_steps is not None:
+                    activations = activations[:max_steps]
+                
+                for t_idx, feat in enumerate(activations):
+                    key = f"{layer_name}_t{t_idx}"
+                    flat_features[key] = feat
+
+            if not flat_features:
+                continue
+
+            # Calc RDMs
+            rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
+            
+            # Compare RDMs
+            rdms_comp = rsatoolbox.rdm.compare(rdms_flat, rdms_flat, method=rdm_comp_method)
+            if rdm_comp_method == "cosine":
+                rdms_comp = np.arccos(np.clip(rdms_comp, -1, 1))
+            rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
+            rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
+
+            # MDS - 2 Components for 2D plot
+            transformer = manifold.MDS(
+                n_components=2,
+                metric=True,
+                max_iter=3000,
+                n_init=30,
+                normalized_stress=True,
+                dissimilarity="precomputed",
+            )
+            dims = transformer.fit_transform(rdms_comp)
+            
+            # Rotate 90 degrees clockwise
+            dims_rot = np.zeros_like(dims)
+            dims_rot[:, 0] = dims[:, 1]
+            dims_rot[:, 1] = -dims[:, 0]
+            dims = dims_rot
+
+            # Map keys to coords
+            keys = list(flat_features.keys())
+            coord_map = {k: dims[i] for i, k in enumerate(keys)}
+
+            # Plotting Config
+            num_layers = len(layer_list)
+            cmap = plt.get_cmap("tab10") 
+            layer_base_colors = [cmap(i) for i in range(num_layers)]
+
+            results_dir = Path("results") / "Joint_Structure"
+            results_dir.mkdir(parents=True, exist_ok=True)
+
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            all_coords = dims
+            amin, amax = all_coords.min(), all_coords.max()
+            center = (amin + amax) / 2.0
+            half_span = max((amax - amin) / 2.0, 1e-6)
+            axis_min = center - half_span * 1.1
+            axis_max = center + half_span * 1.1
+            
+            legend_handles = []
+            legend_labels = []
+
+            for l_idx, layer_name in enumerate(layer_list):
+                base_color = layer_base_colors[l_idx]
+                
                 # Gather coords
-                traj_keys = [k for k in layer_all_keys if k.startswith(prefix + "_t")]
-                traj_keys.sort(key=lambda x: int(x.split('_t')[1]))
+                keys_for_layer = [k for k in keys if k.startswith(f"{layer_name}_t")]
+                keys_for_layer.sort(key=lambda x: int(x.split('_t')[1]))
                 
                 layer_coords = []
-                for k in traj_keys:
-                    if k in coord_map:
-                        layer_coords.append(coord_map[k])
+                for key in keys_for_layer:
+                    if key in coord_map:
+                        layer_coords.append(coord_map[key])
                 
                 layer_coords = np.array(layer_coords)
                 n_steps = len(layer_coords)
                 
                 if n_steps > 0:
-                    # Gradient colors
                     layer_colors_grad = []
                     for t in range(n_steps):
                         alpha = 0.2 + 0.8 * (t / (n_steps - 1)) if n_steps > 1 else 1.0
@@ -1284,69 +1376,44 @@ def plot_joint_structure(
                         c[3] = alpha 
                         layer_colors_grad.append(tuple(c))
                     
-                    # Plot lines
                     if n_steps > 1:
                         points = layer_coords.reshape(-1, 1, 2)
                         segments = np.concatenate([points[:-1], points[1:]], axis=1)
                         seg_colors = layer_colors_grad[:-1]
-                        lc = LineCollection(segments, colors=seg_colors, linewidths=2, linestyle=ls, alpha=1.0)
+                        lc = LineCollection(segments, colors=seg_colors, linewidths=2, alpha=1.0)
                         ax.add_collection(lc)
 
-                    # Plot dots
                     ax.scatter(layer_coords[:, 0], layer_coords[:, 1], c=layer_colors_grad, s=40, edgecolors='none', zorder=10)
                     
-                    # Connection to next layer (Same Group/Label only)
-                    # if l_idx < num_layers - 1:
-                    #     next_layer = layer_list[l_idx + 1]
-                    #     # Assume same suffix structure
-                    #     # Extract suffix from current prefix: remove layer_name
-                    #     suffix = prefix[len(layer_name):]
-                    #     next_prefix = next_layer + suffix
-                        
-                    #     # Find start of next layer with same suffix
-                    #     next_k_start = f"{next_prefix}_t0"
-                    #     # Or find min t
-                    #     # We just assume t0 is start
-                        
-                    #     if next_k_start in coord_map:
-                    #         start_pt = layer_coords[-1]
-                    #         end_pt = coord_map[next_k_start]
-                    #         ax.plot([start_pt[0], end_pt[0]], [start_pt[1], end_pt[1]], 
-                    #                 color='gray', linestyle=ls, linewidth=1.5, alpha=0.5, zorder=5)
+                    # Legend Entry
+                    from matplotlib.lines import Line2D
+                    handle = Line2D([0], [0], marker='o', color='w', label=layer_name,
+                                    markerfacecolor=base_color, markersize=15, linestyle='None')
+                    legend_handles.append(handle)
+                    legend_labels.append(layer_name)
 
-            # Add Legend Entry (only once per layer)
-            # We add a generic entry for the layer color
-            from matplotlib.lines import Line2D
-            handle = Line2D([0], [0], marker='o', color='w', label=layer_name,
-                            markerfacecolor=base_color, markersize=15, linestyle='None')
-            legend_handles.append(handle)
-            legend_labels.append(layer_name)
+            ax.set_xlim([axis_min, axis_max])
+            ax.set_ylim([axis_min, axis_max])
+            ax.set_aspect('equal')
+            ax.set_xlabel("MDS Dim 1")
+            ax.set_ylabel("MDS Dim 2")
+            ax.set_title(f"Joint MDS: {model_name}")
+            
+            legend = ax.legend(handles=legend_handles, labels=legend_labels, 
+                               loc='center left', bbox_to_anchor=(1, 0.5), 
+                               frameon=True, fontsize=14)
+            legend.get_frame().set_facecolor('#e0e0e0')
+            legend.get_frame().set_edgecolor('none')
+            
+            for spine in ax.spines.values():
+                spine.set_color("black")
+            ax.set_facecolor("white")
+            ax.grid(True, linestyle='--', alpha=0.5)
 
-        ax.set_xlim([axis_min, axis_max])
-        ax.set_ylim([axis_min, axis_max])
-        ax.set_aspect('equal')
-        
-        ax.set_xlabel("MDS Dim 1")
-        ax.set_ylabel("MDS Dim 2")
-        title_suffix = " (Split by Label)" if split_by_label else ""
-        ax.set_title(f"Joint Structure: {model_name}{title_suffix}")
-        
-        # Legend
-        legend = ax.legend(handles=legend_handles, labels=legend_labels, 
-                           loc='center left', bbox_to_anchor=(1, 0.5), 
-                           frameon=True, fontsize=14)
-        legend.get_frame().set_facecolor('#e0e0e0')
-        legend.get_frame().set_edgecolor('none')
-        
-        for spine in ax.spines.values():
-            spine.set_color("black")
-        ax.set_facecolor("white")
-        ax.grid(True, linestyle='--', alpha=0.5)
-
-        save_path = results_dir / f"joint_structure_{model_name}{'_split' if split_by_label else ''}.png"
-        fig.savefig(save_path, bbox_inches="tight", dpi=300)
-        plt.close(fig)
-        output_paths.append(str(save_path))
+            save_path = results_dir / f"joint_structure_{model_name}.png"
+            fig.savefig(save_path, bbox_inches="tight", dpi=300)
+            plt.close(fig)
+            output_paths.append(str(save_path))
         
     return output_paths
 
@@ -1360,6 +1427,8 @@ def plot_rdm_per_timestep(
     max_steps=None,
     rdm_calc_method="euclidean",
     rdm_comp_method="cosine", # Added comparison method
+    split_by_label=False,
+    rdm_cmap="Blues",  # Colormap option: "Blues", "magma", "viridis"
 ):
     """
     Computes/Plots a 'Second-order RDM' (RDM of RDMs).
@@ -1400,93 +1469,164 @@ def plot_rdm_per_timestep(
         imgs_device = imgs.to(args.device)
         
         # 1. Collect all "Layer_Time" features into a single ordered dictionary
-        all_features = OrderedDict()
-        
-        # Keep track of indices for axis labeling
-        labels_list = []
-        layer_boundaries = [] # To draw grid lines between layers
-        current_idx = 0
-
+        # Shared logic for feature extraction
+        # Extract all features once
+        all_layer_activations = {}
         for layer_name in layer_list:
             activations = extract_recurrent_steps(model, imgs_device, layer_name, steps=model_steps)
             if max_steps is not None:
                 activations = activations[:max_steps]
+            all_layer_activations[layer_name] = activations
+
+        # Determine Groups to Process
+        groups_to_process = []
+        
+        # Always process All/Joint data first
+        groups_to_process.append( ("", None, "Joint") )
+        
+        if split_by_label and labels is not None:
+            unique_labels = sorted(torch.unique(labels).tolist())
+            # Map index to name (assuming 0=face, 1=object based on check)
+            label_map = {0: "Face", 1: "Object"}
+            
+            for lbl in unique_labels:
+                mask = (labels == lbl).cpu().numpy()
+                count = np.sum(mask)
+                if count < 2:
+                    print(f"Skipping label {lbl} for RDM: insufficient samples ({count})")
+                    continue
+                
+                # Use descriptive name if available, else generic
+                name = label_map.get(lbl, f"Label{lbl}")
+                # Tuple: (Suffix for filename, Mask, Display Name)
+                groups_to_process.append( (f"_{name}", mask, name) )
+
+        # Process each group
+        for suffix_lbl, mask, display_name in groups_to_process:
+            if mask is not None:
+                print(f"Processing RDM-of-RDMs for: {display_name}")
+            
+            # Build flat features for this group
+            flat_features = OrderedDict()
+            # Also rebuild axis tracking logic as it depends on flattened sequence
+            current_idx = 0
+            layer_boundaries = []
+            
+            for layer_name in layer_list:
+                layer_boundaries.append(current_idx)
+                act_list = all_layer_activations[layer_name]
+                
+                for t_idx, feat in enumerate(act_list):
+                    # feat is (Batch, D)
+                    if mask is not None:
+                        sub_feat = feat[mask]
+                    else:
+                        sub_feat = feat
+                    
+                    key = f"{layer_name}_t{t_idx}"
+                    flat_features[key] = sub_feat
+                    current_idx += 1
             
             layer_boundaries.append(current_idx)
+
+            if not flat_features:
+                continue
+
+            # 2. Compute RDMs
+            rdms_flat, _ = calc_rdms(args, flat_features, method=rdm_calc_method)
             
-            for t_idx, feat in enumerate(activations):
-                key = f"{layer_name}_t{t_idx}"
-                all_features[key] = feat
-                # For label, maybe just show t_idx, and group by layer on axis?
-                # Or sparse labels
-                labels_list.append(key)
-                current_idx += 1
-        
-        layer_boundaries.append(current_idx) # End boundary
-
-        if not all_features:
-            continue
-
-        # 2. Compute RDMs for all these feature sets
-        # calc_rdms returns an rsatoolbox.rdm.RDMs object containing *all* RDMs
-        rdms_flat, _ = calc_rdms(args, all_features, method=rdm_calc_method)
-        
-        # 3. Compare RDMs (RDM of RDMs)
-        # This results in a square matrix (N_states x N_states)
-        rdms_comp = rsatoolbox.rdm.compare(rdms_flat, rdms_flat, method=rdm_comp_method)
-        
-        # Process specific to cosine distance if needed to look like dissimilarity/similarity
-        if rdm_comp_method == "cosine":
-            # map -1..1 to distance-like or keep as similarity?
-            # User asked for RDM (Dissimilarity Matrix usually)
-            # rsatoolbox compare returns DISTANCE usually (0=same).
-            # If method='cosine', it returns cosine distance (1 - cos).
-            # Let's ensure it is symmetric and clean.
-            rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-            rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-        
-        # 4. Plot
-        save_dir = Path("results") / "RDM_Timesteps"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        fig, ax = plt.subplots(figsize=(12, 10))
-        
-        # Plot matrix
-        im = ax.imshow(rdms_comp, cmap='coolwarm', origin='upper')
-        
-        # Colorbar
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label(f"RDM Difference ({rdm_comp_method})", rotation=270, labelpad=15)
-        
-        # Axis labels
-        # Show tick marks for every step might be too crowded (75 ticks).
-        # Let's show labels only at the "center" of each layer block, or just layer boundaries.
-        
-        # Major ticks at layer centers
-        layer_centers = []
-        for i in range(len(layer_boundaries) - 1):
-            start = layer_boundaries[i]
-            end = layer_boundaries[i+1]
-            layer_centers.append((start + end - 1) / 2.0)
+            # 3. Perform Comparisons and Plotting (Two Loop Passes)
+            # Different limits for Joint vs Face/Object plots
+            # Joint uses higher limits, Face/Object use tighter limits
+            is_joint = (display_name == "Joint")
             
-            # Draw lines separating layers
-            if i > 0:
-                ax.axhline(start - 0.5, color='black', linewidth=1)
-                ax.axvline(start - 0.5, color='black', linewidth=1)
-        
-        ax.set_xticks(layer_centers)
-        ax.set_xticklabels(layer_list, rotation=45, ha='right')
-        ax.set_yticks(layer_centers)
-        ax.set_yticklabels(layer_list)
-        
-        ax.set_title(f"Joint Representation RDM Structure: {model_name}")
-        ax.set_xlabel("Layer (Time ->)")
-        ax.set_ylabel("Layer (Time v)")
+            comparisons = [
+                {
+                    "method": "cosine",
+                    "label": "Dissimilarity (1 - cosine)",
+                    "cmap": rdm_cmap,  # Use parameter instead of hardcoded
+                    "suffix": "cosine",
+                    "process_func": lambda x: np.clip(1.0 - x, 0, 2),
+                    "limits": (0.0, 0.25) if is_joint else (0.0, 0.13)
+                },
+                {
+                    "method": "spearman",
+                    "label": "Dissimilarity (1 - Spearman)",
+                    "cmap": rdm_cmap,  # Use parameter instead of hardcoded
+                    "suffix": "spearman",
+                    "process_func": lambda x: 1.0 - x,
+                    "limits": (0.0, 1.2) if is_joint else (0.0, 1.1)
+                }
+            ]
 
-        save_path = save_dir / f"RDM_of_RDMs_{model_name}.png"
-        fig.savefig(save_path, bbox_inches='tight', dpi=150)
-        plt.close(fig)
-        output_paths.append(str(save_path))
-        print(f"Saved RDM-of-RDMs plot to {save_path}")
+            for comp in comparisons:
+                method_name = comp["method"]
+                rdms_comp = rsatoolbox.rdm.compare(rdms_flat, rdms_flat, method=method_name)
+                
+                # Symmetrize and Fix NaNs
+                rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
+                rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
+                
+                # Custom processing
+                rdms_comp = comp["process_func"](rdms_comp)
+                
+                # Log actual max for reference
+                actual_max = np.max(rdms_comp)
+                print(f"  {comp['suffix']}: actual max dissimilarity = {actual_max:.4f}, using vmax = {comp['limits'][1]}")
+                
+                # 4. Plot
+                save_dir = Path("results") / "RDM_Timesteps"
+                save_dir.mkdir(parents=True, exist_ok=True)
+                
+                fig, ax = plt.subplots(figsize=(12, 10))
+                
+                # Apply fixed limits based on plot type
+                vargs = {"vmin": comp["limits"][0], "vmax": comp["limits"][1]}
+
+                im = ax.imshow(rdms_comp, cmap=comp["cmap"], origin='upper', **vargs)
+                
+                # Colorbar
+                cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                cbar.set_label(comp["label"], rotation=270, labelpad=15)
+                
+                # Axis labels and layer boundaries
+                layer_centers = []
+                for i in range(len(layer_boundaries) - 1):
+                    start = layer_boundaries[i]
+                    end = layer_boundaries[i+1]
+                    layer_centers.append((start + end - 1) / 2.0)
+                    
+                    # Add black grid lines at layer boundaries
+                    if i > 0:
+                        ax.axhline(start - 0.5, color='black', linewidth=1)
+                        ax.axvline(start - 0.5, color='black', linewidth=1)
+                
+                ax.set_xticks(layer_centers)
+                ax.set_xticklabels(layer_list, rotation=45, ha='right')
+                ax.set_yticks(layer_centers)
+                ax.set_yticklabels(layer_list)
+                
+                # Remove tick marks but keep tick labels
+                ax.tick_params(axis='both', which='both', length=0)
+                
+                # Remove default grid lines
+                ax.grid(False)
+                
+                # Set Title - Joint without "only", Face/Object with "only"
+                if display_name == "Joint":
+                    ax.set_title(f"RDM of RDMs ({display_name})")
+                elif display_name in ["Face", "Object"]:
+                    ax.set_title(f"RDM of RDMs ({display_name} only)")
+                    
+                ax.set_xlabel(u"Layer (Time \u2192)")
+                ax.set_ylabel(u"Layer (Time \u2193)")
+        
+                # Include colormap name in filename for easy identification
+                cmap_suffix = f"_{rdm_cmap}" if rdm_cmap != "Blues" else ""
+                save_path = save_dir / f"RDM_of_RDMs_{model_name}{suffix_lbl}_{comp['suffix']}{cmap_suffix}.png"
+                fig.savefig(save_path, bbox_inches='tight', dpi=150)
+                plt.close(fig)
+                output_paths.append(str(save_path))
+                print(f"Saved {comp['label']} plot to {save_path}")
 
     return output_paths
