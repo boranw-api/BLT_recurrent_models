@@ -27,48 +27,17 @@ from rsatoolbox.rdm.calc import calc_rdm
 
 # new imports for our plotting 
 from analyze_representations import kasper_dataset, load_model_path
+from matplotlib.collections import LineCollection
 
 
 
 
 
-def fetch_dataloaders(args):
-    """
-    Fetches the data loaders for training and testing datasets.
-
-    Inputs:
-    - args (Namespace): Parsed arguments with training configuration.
-
-    Outputs:
-    - train_loader (torch.utils.data.DataLoader): DataLoader for the training data.
-    - test_loader (torch.utils.data.DataLoader): DataLoader for the test data.
-    """
-    train_kwargs = {'batch_size': args.batch_size}
-    test_kwargs = {'batch_size': args.test_batch_size}
-    if args.use_cuda:
-        cuda_kwargs = {'num_workers': 1,
-                       'pin_memory': True,
-                       'shuffle': True}
-        train_kwargs.update(cuda_kwargs)
-        test_kwargs.update(cuda_kwargs)
-
-    transform=transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-        ])
-    with contextlib.redirect_stdout(io.StringIO()): #to suppress output
-        dataset1 = datasets.MNIST('../data', train=True, download=True,
-                       transform=transform)
-        dataset2 = datasets.MNIST('../data', train=False,
-                       transform=transform)
-        train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
-        test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
-        return train_loader, test_loader
-    
-def amir_dataset(
+def amir_loaders(
+    args,
+    *,
     pickle_path: str = "./blt_local_cache/face_object_dataset.pkl",
     label_key: str = "group",
-    enforce_channels_first: bool = True,
 ):
     path = Path(pickle_path)
 
@@ -92,6 +61,8 @@ def amir_dataset(
         images = torch.from_numpy(images)
 
     imgs = images.float()
+    enforce_channels_first = True
+
     if enforce_channels_first and imgs.ndim == 4 and imgs.shape[-1] in (1, 3, 4) and imgs.shape[1] not in (1, 3, 4):
         imgs = imgs.permute(0, 3, 1, 2)
     elif imgs.ndim == 3:
@@ -106,23 +77,7 @@ def amir_dataset(
         "label_key": label_key,
         "label_lookup": label_lookup,
     })
-
-    return imgs.contiguous(), labels, config
-
-def amir_loaders(
-    args,
-    *,
-    pickle_path: str = "./blt_local_cache/face_object_dataset.pkl",
-    label_key: str = "group",
-):
-    imgs, labels, config = amir_dataset(pickle_path=pickle_path, label_key=label_key)
-
-    train_kwargs = {"batch_size": args.batch_size, "shuffle": True}
-    test_kwargs = {"batch_size": args.test_batch_size, "shuffle": False}
-    if args.use_cuda:
-        cuda_kwargs = {"num_workers": 1, "pin_memory": True}
-        train_kwargs.update(cuda_kwargs)
-        test_kwargs.update(cuda_kwargs)
+    imgs = imgs.contiguous()
 
     dataset = TensorDataset(imgs, labels)
     dataset_fraction = float(getattr(args, "train_split", 0.8))
@@ -134,6 +89,14 @@ def amir_loaders(
     if train_size >= total_items:
         train_size = total_items - 1
     test_size = total_items - train_size
+
+    # Set batch size to the full size of each split
+    train_kwargs = {"batch_size": train_size, "shuffle": True}
+    test_kwargs = {"batch_size": test_size, "shuffle": False}
+    if args.use_cuda:
+        cuda_kwargs = {"num_workers": 1, "pin_memory": True}
+        train_kwargs.update(cuda_kwargs)
+        test_kwargs.update(cuda_kwargs)
 
     seed = getattr(args, "seed", None)
     generator = torch.Generator()
@@ -246,29 +209,7 @@ def calc_rdms(args, model_features, method='correlation'):
 
     return rdms, rdms_dict
 
-def extract_features(model, imgs, return_layers, plot='none'):
-    """ 
-    Extracts features from specified layers of the model.
 
-    Inputs:
-    - model (torch.nn.Module): The model from which to extract features.
-    - imgs (torch.Tensor): Batch of input images.
-    - return_layers (list): List of layer names from which to extract features.
-    - plot (str): Option to plot the features. Default is 'none'.
-
-    Outputs:
-    - model_features (dict): A dictionary with layer names as keys and extracted features as values.
-    """
-    if return_layers == 'all':
-        return_layers, _ = get_graph_node_names(model)
-    elif return_layers == 'layers':
-        layers, _ = get_graph_node_names(model)
-        return_layers = [l for l in layers if 'input' in l or 'conv' in l or 'fc' in l]
-
-    feature_extractor = create_feature_extractor(model, return_nodes=return_layers)
-    model_features = feature_extractor(imgs)
-
-    return model_features
 
 # created for potting recurrent steps of a given layer
 def extract_recurrent_steps(model, imgs, target_layer, steps=15):
@@ -332,222 +273,11 @@ def sample_images(data_loader, n=5, plot=True):
 
     return imgs, labels
 
-def plot_rdms(model_rdms):
-    """
-    Plots the Representational Dissimilarity Matrices (RDMs) for each layer of a model.
 
-    Inputs:
-    - model_rdms (dict): A dictionary where keys are layer names and values are the corresponding RDMs.
-    """
-    fig = plt.figure(figsize=(16, 8))
-    gs = fig.add_gridspec(1, len(model_rdms))
-    fig.subplots_adjust(wspace=0.2, hspace=0.2)
 
-    for l in range(len(model_rdms)):
-        layer = list(model_rdms.keys())[l]
-        rdm = np.squeeze(model_rdms[layer])
 
-        if len(rdm.shape) < 2:
-            rdm = rdm.reshape((int(np.sqrt(rdm.shape[0])), int(np.sqrt(rdm.shape[0]))))
 
-        rdm = rdm / np.max(rdm)
 
-        ax = plt.subplot(gs[0, l])
-        ax_ = ax.imshow(rdm, cmap='magma_r')
-        ax.set_title(f'{layer}')
-
-    fig.subplots_adjust(right=0.92)
-    cbar_ax = fig.add_axes([0.94, 0.18, 0.01, 0.53])
-    cbar_ax.text(-2.3, 0.05, 'Normalized euclidean distance', size=10, rotation=90)
-    fig.colorbar(ax_, cax=cbar_ax)
-
-    plt.show()
-
-def rep_path(
-    model_features,
-    model_colors,
-    labels=None,
-    rdm_calc_method='euclidean',
-    rdm_comp_method='cosine',
-    ax=None,
-    legend=True,
-    title=None,
-    save_path=None,
-):
-    """
-    Represents paths of model features in a reduced-dimensional space.
-
-    Inputs:
-    - model_features (dict): Dictionary containing model features for each model.
-    - model_colors (dict): Dictionary mapping model names to colors for visualization.
-    - labels (array-like, optional): Array of labels corresponding to the model features.
-    - rdm_calc_method (str, optional): Method for calculating RDMs ('euclidean' or 'correlation').
-    - rdm_comp_method (str, optional): Method for comparing RDMs ('cosine' or 'corr').
-    - ax (matplotlib.axes.Axes, optional): Axis to draw on. If None, a new figure is created.
-    - legend (bool, optional): Whether to display the legend. Default is True when creating a standalone figure.
-    - title (str, optional): Custom subplot title. Defaults to a generic title when None.
-    - save_path (str, optional): Optional path for saving the figure when `ax` is None.
-    """
-
-    model_names = list(model_features.keys())
-    path_len = []
-    path_colors = []
-    rdms_list = []
-    ax_ticks = []
-    tick_colors = []
-
-    for model_name in model_names:
-        features = model_features[model_name]
-        path_colors.append(model_colors[model_name])
-        path_len.append(len(features))
-        ax_ticks.append(list(features.keys()))
-        tick_colors.append([model_colors[model_name]] * len(features))
-        rdms, _ = calc_rdms(features, method=rdm_calc_method)
-        rdms_list.append(rdms)
-
-    path_len = np.insert(np.cumsum(path_len), 0, 0)
-
-    include_labels = labels is not None
-    if include_labels:
-        rdms, _ = calc_rdms({'labels': F.one_hot(labels).float().to(args.device)}, method=rdm_calc_method)
-        rdms_list.append(rdms)
-        ax_ticks.append(['labels'])
-        tick_colors.append(['m'])
-
-    rdms = rsatoolbox.rdm.concat(rdms_list)
-
-    ax_ticks = [tick for layer_ticks in ax_ticks for tick in layer_ticks]
-    tick_colors = [color for layer_colors in tick_colors for color in layer_colors]
-    tick_colors = ['k' if tick == 'input' else color for tick, color in zip(ax_ticks, tick_colors)]
-
-    rdms_comp = rsatoolbox.rdm.compare(rdms, rdms, method=rdm_comp_method)
-    if rdm_comp_method == 'cosine':
-        rdms_comp = np.clip(rdms_comp, -1, 1)
-        rdms_comp = np.arccos(rdms_comp)
-    rdms_comp = np.nan_to_num(rdms_comp, nan=0.0)
-    rdms_comp = (rdms_comp + rdms_comp.T) / 2.0
-
-    remove_indices = np.where(np.array(ax_ticks) == 'input')[0][1:]
-    for index in sorted(remove_indices, reverse=True):
-        del ax_ticks[index]
-        del tick_colors[index]
-        rdms_comp = np.delete(np.delete(rdms_comp, index, axis=0), index, axis=1)
-        for m in range(len(path_len) - 1):
-            if path_len[m] <= index < path_len[m + 1]:
-                for k in range(m + 1, len(path_len)):
-                    path_len[k] -= 1
-                break
-
-    transformer = manifold.MDS(
-        n_components=2,
-        max_iter=1000,
-        n_init=10,
-        normalized_stress='auto',
-        dissimilarity="precomputed",
-    )
-    dims = transformer.fit_transform(rdms_comp)
-
-    created_fig = False
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        created_fig = True
-    else:
-        fig = ax.figure
-
-    amin, amax = dims.min(), dims.max()
-    amin, amax = (amin + amax) / 2 - (amax - amin) * 5 / 8, (amin + amax) / 2 + (amax - amin) * 5 / 8
-
-    for spine in ax.spines.values():
-        spine.set_color('#7f7f7f')
-    ax.set_facecolor('white')
-
-    for i in range(len(rdms_list) - (1 if include_labels else 0)):
-        path_indices = np.arange(path_len[i], path_len[i + 1])
-        path_indices = path_indices[path_indices < len(dims)]
-        if len(path_indices) == 0:
-            continue
-        ax.plot(
-            dims[path_indices, 0],
-            dims[path_indices, 1],
-            color=path_colors[i],
-            marker='.',
-        )
-
-    idx_input = ax_ticks.index('input') if 'input' in ax_ticks else None
-    if idx_input is not None and idx_input < len(dims):
-        ax.plot(dims[idx_input, 0], dims[idx_input, 1], color='k', marker='s')
-
-    if include_labels:
-        idx_labels = ax_ticks.index('labels')
-        if idx_labels < len(dims):
-            ax.plot(dims[idx_labels, 0], dims[idx_labels, 1], color='m', marker='*')
-
-    default_title = title or 'Representational Geometry Path'
-    ax.set_title(default_title, fontdict={'fontsize': 12})
-    ax.set_xlim([amin, amax])
-    ax.set_ylim([amin, amax])
-    ax.set_xlabel("dim 1")
-    ax.set_ylabel("dim 2")
-
-    if legend and model_names:
-        ax.legend(model_names, fontsize=8)
-
-    if created_fig:
-        fig.tight_layout()
-        if save_path is not None:
-            fig.savefig(save_path, bbox_inches='tight')
-
-    return dims
-
-def plot_dim_reduction(model_features, labels, transformer_funcs):
-    """
-    Plots the dimensionality reduction results for model features using various transformers.
-
-    Inputs:
-    - model_features (dict): Dictionary containing model features for each layer.
-    - labels (array-like): Array of labels corresponding to the model features.
-    - transformer_funcs (list): List of dimensionality reduction techniques to apply ('PCA', 'MDS', 't-SNE').
-    """
-
-    transformers = []
-    for t in transformer_funcs:
-        if t == 'PCA': transformers.append(PCA(n_components=2))
-        if t == 'MDS': transformers.append(manifold.MDS(n_components = 2, normalized_stress='auto'))
-        if t == 't-SNE': transformers.append(manifold.TSNE(n_components = 2, perplexity=40, verbose=0))
-
-    fig = plt.figure(figsize=(8, 2.5*len(transformers)))
-    # and we add one plot per reference point
-    gs = fig.add_gridspec(len(transformers), len(model_features))
-    fig.subplots_adjust(wspace=0.2, hspace=0.2)
-
-    return_layers = list(model_features.keys())
-
-    for f in range(len(transformer_funcs)):
-
-        for l in range(len(return_layers)):
-            layer =  return_layers[l]
-            feats = model_features[layer].detach().cpu().flatten(1)
-            feats_transformed= transformers[f].fit_transform(feats)
-
-            amin, amax = feats_transformed.min(), feats_transformed.max()
-            amin, amax = (amin + amax) / 2 - (amax - amin) * 5/8, (amin + amax) / 2 + (amax - amin) * 5/8
-            ax = plt.subplot(gs[f,l])
-            ax.set_xlim([amin, amax])
-            ax.set_ylim([amin, amax])
-            ax.axis("off")
-            #ax.set_title(f'{layer}')
-            if f == 0: ax.text(0.5, 1.12, f'{layer}', size=16, ha="center", transform=ax.transAxes)
-            if l == 0: ax.text(-0.3, 0.5, transformer_funcs[f], size=16, ha="center", transform=ax.transAxes)
-            # Create a discrete color map based on unique labels
-            num_colors = len(np.unique(labels))
-            cmap = plt.get_cmap('viridis_r', num_colors) # 10 discrete colors
-            norm = mpl.colors.BoundaryNorm(np.arange(-0.5,num_colors), cmap.N)
-            ax_ = ax.scatter(feats_transformed[:, 0], feats_transformed[:, 1], c=labels, cmap=cmap, norm=norm)
-
-    fig.subplots_adjust(right=0.9)
-    cbar_ax = fig.add_axes([1.01, 0.18, 0.01, 0.53])
-    fig.colorbar(ax_, cax=cbar_ax, ticks=np.linspace(0,9,10))
-    plt.show()
 
 # beginning here: new functions for Fig.4 
 def plot_shepard_diagram(data, dissimilarity_matrix=None, save_path=None, layout=None, title='Shepard Diagram'):
@@ -638,8 +368,16 @@ def plot_rep_traj_single_mds(
     shown in a distinct color and time evolution is indicated by hollow-to-solid dots.
     When plot_dim == 3, also saves multiple 2D snapshot views for appendix-style panels.
     """
-    cache_root = Path(cache_dir)
-    model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    model_path = Path(getattr(args, 'model_path'))
+    if not model_path.exists():
+        print(f"Model path does not exist: {model_path}")
+        return []
+        
+    model_files = [model_path]
+    
+    if getattr(args, "dry_run", False):
+        print("Dry run: processing specified model")
+
     output_paths = []
     if not model_files:
         return output_paths
@@ -650,15 +388,16 @@ def plot_rep_traj_single_mds(
     for model_path in model_files:
         model_name = model_path.parent.name
         model_name = "_".join(model_name.split("_")[:2])
-        if "vggface" not in model_name or "imagenet" in model_name:
-            continue  # Skip models that do not contain "vggface" or contain "imagenet" in their name
         print(f"Processing (1x6): {model_name}")
         model, _, _ = load_model_path(str(model_path), print_model=False)
         model.to(args.device)
         model.eval()
 
         model_steps = steps
-        if model_steps is None:
+        if getattr(args, "dry_run", False):
+            model_steps = 2
+            print("Dry run: reduced steps to 2")
+        elif model_steps is None:
             model_steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
 
         layer_list = target_layers
@@ -744,16 +483,17 @@ def plot_rep_traj_single_mds(
     axis_min = center - half_span * 1.4
     axis_max = center + half_span * 1.4
 
-    snapshot_views = int(getattr(args, "single_mds_snapshot_views", 4))
-    snapshot_elev = float(getattr(args, "single_mds_snapshot_elev", 20.0))
-    snapshot_azim_start = float(getattr(args, "single_mds_snapshot_azim_start", 0.0))
-    snapshot_azim_step = float(getattr(args, "single_mds_snapshot_azim_step", 90.0))
+    snapshot_views = int(getattr(args, "shared_space_snapshot_views", 4))
+    snapshot_elev = float(getattr(args, "shared_space_snapshot_elev", 20.0))
+    snapshot_azim_start = float(getattr(args, "shared_space_snapshot_azim_start", 0.0))
+    snapshot_azim_step = float(getattr(args, "shared_space_snapshot_azim_step", 90.0))
 
     for model_path in model_files:
         model_name = model_path.parent.name
         model_name = "_".join(model_name.split("_")[:2])
-        if "vggface" not in model_name or "imagenet" in model_name:
-            continue  # Skip models that do not contain "vggface" or contain "imagenet" in their name
+        # Filter removed to allow explicit model path selection
+        # if "vggface" not in model_name or "imagenet" in model_name:
+        #     continue  # Skip models that do not contain "vggface" or contain "imagenet" in their name
         layer_order = model_layer_maps[model_name]["layer_order"]
         prefixed_layer_keys = model_layer_maps[model_name]["prefixed_layer_keys"]
         layer_cmap = plt.get_cmap("tab10")
@@ -877,6 +617,16 @@ def plot_rep_traj_separate_mds(
 
     cache_root = Path(cache_dir)
     model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    if getattr(args, "dry_run", False):
+        valid_models = []
+        for p in model_files:
+            mn = "_".join(p.parent.name.split("_")[:2])
+            if "vggface" in mn and "imagenet" not in mn:
+                valid_models.append(p)
+                break
+        model_files = valid_models
+        print("Dry run: processing only first valid model")
+
     trajectory_paths = []
     shepard_paths = []
 
@@ -900,7 +650,10 @@ def plot_rep_traj_separate_mds(
         model.eval()
 
         model_steps = steps
-        if model_steps is None:
+        if getattr(args, "dry_run", False):
+            model_steps = 2
+            print("Dry run: reduced steps to 2")
+        elif model_steps is None:
             model_steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
 
         print(model_steps)
@@ -1086,8 +839,6 @@ def plot_rep_traj_separate_mds(
 
     return trajectory_paths, shepard_paths
 
-from matplotlib.collections import LineCollection
-
 def plot_joint_structure(
     args,
     imgs,
@@ -1106,8 +857,20 @@ def plot_joint_structure(
     Trajectories are drawn as lines with gradient color, plus dots at each step.
     If split_by_label is True, separates trajectories by input class (e.g. Face vs Object).
     """
-    cache_root = Path(cache_dir)
-    model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    # cache_root = Path(cache_dir)
+    # model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    
+    # Use the specific model path provided in args
+    model_path = Path(getattr(args, 'model_path'))
+    if not model_path.exists():
+        print(f"Model path does not exist: {model_path}")
+        return []
+        
+    model_files = [model_path]
+    
+    if getattr(args, "dry_run", False):
+        print("Dry run: processing specified model")
+
     output_paths = []
 
     if not model_files:
@@ -1116,8 +879,9 @@ def plot_joint_structure(
     for model_path in model_files:
         model_name = model_path.parent.name
         model_name = "_".join(model_name.split("_")[:2])
-        if "vggface" not in model_name or "imagenet" in model_name:
-            continue
+        # Filter removed to allow explicit model path selection
+        # if "vggface" not in model_name or "imagenet" in model_name:
+        #     continue
 
         print(f"Processing (Joint MDS): {model_name}")
         model, _, _ = load_model_path(str(model_path), print_model=False)
@@ -1125,7 +889,10 @@ def plot_joint_structure(
         model.eval()
 
         model_steps = steps
-        if model_steps is None:
+        if getattr(args, "dry_run", False):
+            model_steps = 2
+            print("Dry run: reduced steps to 2")
+        elif model_steps is None:
             model_steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
 
         layer_list = target_layers
@@ -1138,10 +905,6 @@ def plot_joint_structure(
         if split_by_label and labels is not None:
             # SEPARATE MDS PER LABEL logic
             unique_labels = sorted(torch.unique(labels).tolist())
-            
-            # Pre-extract all features first (simplest way is to carry full batch then slice)
-            # Actually, extract_recurrent_steps returns list of tensors.
-            # We can re-extract or slice. Slicing is faster.
             
             # Extract once for all images
             all_layer_activations = {}
@@ -1436,8 +1199,19 @@ def plot_rdm_per_timestep(
     at (Layer X, Time Y) and (Layer A, Time B).
     """
     
-    cache_root = Path(cache_dir)
-    model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    # cache_root = Path(cache_dir)
+    # model_files = sorted(cache_root.glob("*/blt_full_objects.pt"))
+    
+    # Use the specific model path provided in args
+    model_path = Path(getattr(args, 'model_path'))
+    if not model_path.exists():
+        print(f"Model path does not exist: {model_path}")
+        return []
+
+    model_files = [model_path]
+    
+    if getattr(args, "dry_run", False):
+        print("Dry run: processing specified model")
     
     if not model_files:
         return []
@@ -1447,8 +1221,9 @@ def plot_rdm_per_timestep(
     for model_path in model_files:
         model_name = model_path.parent.name
         model_name = "_".join(model_name.split("_")[:2])
-        if "vggface" not in model_name or "imagenet" in model_name:
-            continue
+        # Filter removed to allow explicit model path selection
+        # if "vggface" not in model_name or "imagenet" in model_name:
+        #     continue
 
         print(f"Processing (RDM of RDMs): {model_name}")
         model, _, _ = load_model_path(str(model_path), print_model=False)
@@ -1456,7 +1231,10 @@ def plot_rdm_per_timestep(
         model.eval()
 
         model_steps = steps
-        if model_steps is None:
+        if getattr(args, "dry_run", False):
+            model_steps = 2
+            print("Dry run: reduced steps to 2")
+        elif model_steps is None:
             model_steps = getattr(model, "times", getattr(model, "num_recurrence", 1))
         
         if max_steps is not None:
@@ -1469,7 +1247,6 @@ def plot_rdm_per_timestep(
         imgs_device = imgs.to(args.device)
         
         # 1. Collect all "Layer_Time" features into a single ordered dictionary
-        # Shared logic for feature extraction
         # Extract all features once
         all_layer_activations = {}
         for layer_name in layer_list:

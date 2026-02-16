@@ -1,41 +1,23 @@
-# BLT Recurrent Models: Analysis & Visualization
+# BLT Recurrent Models
 
-This repository contains the analysis and visualization suite for the BLT (Bottom-up, Lateral, Top-down) family of face-recognition networks. It focuses on characterizing the representational dynamics of recurrent models and comparing them to primate inferior temporal (IT) cortex.
+This repository contains the analysis and visualization suite for the BLT (Bottom-up, Lateral, Top-down) family of face-recognition networks. It focuses on characterizing the representational dynamics of recurrent models and comparing the last two layers of them to primate inferior temporal (IT) cortex.
 
 **Note:** The original model training code (`main.py`) has been moved to the `archive/` directory. The root directory is now streamlined for analyzing pre-trained models.
 
-## Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-lab/BLT_recurrent_models.git
-    cd BLT_recurrent_models
-    ```
-
-2.  **Install dependencies:**
-    It is recommended to use a virtual environment.
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    ```
-    *Note: The `requirements.txt` includes a git dependency for `pytikz`.*
-
 ## Usage
 
-The primary entry point for analysis is `rnn_test.py`. This script supports various analyses including Representational Dissimilarity Matrices (RDMs), Multi-Dimensional Scaling (MDS) trajectories, and Dynamic Stability Analysis (DSA).
+The primary entry point for analysis is `rnn_test.py`.
 
 ### 1. Representational Trajectories (MDS)
 
 Visualize how the model's representations evolve over recurrent time steps.
 
-**Single MDS Space (Shared):**
+**Joint Structure (3D):**
 Project all layers and time steps into a common low-dimensional space to compare them directly.
 ```bash
 python rnn_test.py \
     --model-path "path/to/model.pt" \
-    --mds-type single \
-    --plot-dim 3
+    --mds-type joint_structure_3d
 ```
 
 **Separate MDS Spaces:**
@@ -46,35 +28,51 @@ python rnn_test.py \
     --mds-type multiple
 ```
 
-**Joint Structure (Interactive 3D):**
-Visualize the entire model hierarchy as a unified 3D structure, connecting layers sequentially.
+**Joint Structure:**
+Generate a 2D MDS plot for each layer, with each layer connected sequentially.
 ```bash
 python rnn_test.py \
     --model-path "path/to/model.pt" \
     --mds-type joint_structure \
-    --split-by-label  # Optional: visualize separate trajectories for different classes
+    --split-by-label  # if chosen, would generate two MDS plots, where one is object only and the other is face only
 ```
-*   **[Read more about Joint Structure Plotting](readmes/joint_structure.md)**
 
-### 2. Dynamic Stability Analysis (DSA)
+### 2. RDM Analysis
 
-Analyze the dynamical stability of the recurrent representations using Hankel matrices and DMD-like techniques.
+Compute and plot RDMs to quantify representational geometry (RDM-of-RDMs).
+```bash
+python rnn_test.py \
+    --model-path "path/to/model.pt" \
+    --plot-rdm-timesteps
+```
+*   **[Read more about RDM of RDMs](readmes/rdm_of_rdm.md)**
+
+### 3. Combined Analysis
+
+You can run multiple analyses in a single command. For example, to generate both the interactive joint structure and the RDM analysis:
 
 ```bash
 python rnn_test.py \
     --model-path "path/to/model.pt" \
-    --dsa-save-path ./results/dsa_analysis.png \
-    --dsa-n-delays 3
+    --mds-type joint_structure \
+    --plot-rdm-timesteps
 ```
-*   **[Read more about DSA](readmes/DSA.md)**
 
-### 3. RDM Analysis
+All generated plots will be saved in the `results/` directory under their respective subfolders (`3D/`, `Joint_Structure/`, `RDM_Timesteps/`).
 
-Compute and plot RDMs to quantify representational geometry.
-```bash
-python rnn_test.py --plot-rdm-timesteps
-```
-*   **[Read more about RDM of RDMs](readmes/rdm_of_rdm.md)**
+### 4. Dataset Information (Amir Dataset)
+
+The dataset used (`blt_local_cache/face_object_dataset.pkl`) contains 4,800 images balanced between faces and objects.
+
+| Property | Value |
+| :--- | :--- |
+| **Total Images** | 4,800 |
+| **Classes** | Faces (2,400), Objects (2,400) |
+| **Dimensions** | 512 x 512 px (RGB) |
+| **Organization** | Grouped by class (All Faces first, then all Objects) |
+| **Data Type** | PIL Images |
+
+**Important Note:** The loader uses `random_split`, meaning the test set is a **random shuffle** of the original data. Therefore, even though the source file is grouped, the test loader yields mixed batches. 
 
 ## Directory Layout
 
@@ -87,24 +85,8 @@ BLT_recurrent_models/
 ├── readmes/                  # Detailed method documentation
 ├── results/                  # Generated plots and analysis outputs
 ├── analyze_representations.py # Core analysis logic (RSA, CKA)
-├── dsa_standard.py           # Dynamic Stability Analysis implementation
+
 ├── engine.py                 # (Legacy) Training engine components
 ├── geometry_path.py          # Plotting and geometry analysis plotting functions
 └── rnn_test.py               # Main CLI for running analyses
-```
-
-## Historic / Training Code
-
-The training components (`main.py`, `utils.py`, `blt_tuning_dynamics.ipynb`, etc.) have been moved to the `archive/` folder to clean up the workspace.
-To train a new model, you may need to restore these files to the root or adjust imports to reference them from `archive/`.
-
-**Original Training Example:**
-```bash
-# (Requires main.py in root)
-python main.py --model blt_bl --dataset imagenet --epochs 90
-```
-
-More often used command:
-```bash
-/home/savannah/anaconda3/envs/blt/bin/python rnn_test.py --plot-rdm-timesteps --skip-dsa --test-batch-size 10 --batch-size 10
 ```

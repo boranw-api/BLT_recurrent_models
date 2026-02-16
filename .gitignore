@@ -9,8 +9,7 @@ __pycache__/
 venv/
 env/
 
-results/3D_structure/
-results/3D/
+results/
 blt_local_cache/
 wandb/
 datasets/saved_data/
